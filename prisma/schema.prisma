@@ -1,7 +1,9 @@
-// Phase 0 placeholder schema — just enough for `prisma migrate dev` to have
-// something to do. The real data model (Merchant, Case, Event, Action,
-// AuditLog, ScheduledJob, User, etc.) is designed in Phase 1 and will
-// replace this entirely.
+// Recover — full data model (Phase 1)
+//
+// Single source of truth for all persistence. No manually maintained
+// duplicate types — import generated types from @prisma/client.
+//
+// Money fields are stored as Int in the smallest currency unit (paise).
 
 generator client {
   provider = "prisma-client-js"
@@ -12,6 +14,287 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model HealthCheck {
-  id Int @id @default(autoincrement())
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Scenario {
+  CHECKOUT_DROPOFF
+  SUBSCRIPTION_FAILURE
+  INVOICE_OVERDUE
+}
+
+enum ClassificationSource {
+  RULE
+  EMBEDDING
+  HUMAN
+}
+
+enum CaseState {
+  DETECTED
+  DIAGNOSED
+  ACTION_SCHEDULED
+  ACTION_SENT
+  RECOVERED
+  ESCALATED
+  ABANDONED
+  CLOSED
+}
+
+enum Actor {
+  SYSTEM
+  HUMAN
+}
+
+enum Channel {
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum Language {
+  EN
+  HINGLISH
+}
+
+enum GeneratedBy {
+  TEMPLATE
+  LLM
+}
+
+enum DeliveryStatus {
+  SENT
+  FAILED
+  BOUNCED
+  DELIVERED
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+enum UserRole {
+  ADMIN
+  REVIEWER
+  VIEWER
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model Merchant {
+  id                 String          @id @default(cuid())
+  name               String
+  razorpayAccountId  String
+  contactEmail       String
+  createdAt          DateTime        @default(now())
+
+  customers          Customer[]
+  recoveryEvents     RecoveryEvent[]
+  cases              Case[]
+}
+
+model Customer {
+  id         String   @id @default(cuid())
+  merchantId String
+  name       String
+  email      String
+  phone      String
+  createdAt  DateTime @default(now())
+
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  recoveryEvents RecoveryEvent[]
+  cases      Case[]
+
+  // A customer is unique per merchant, not globally.
+  @@unique([merchantId, email])
+  @@index([merchantId])
+}
+
+model RecoveryEvent {
+  id              String   @id @default(cuid())
+  merchantId      String
+  customerId      String
+  scenario        Scenario
+  sourceType      String          // e.g. "razorpay_webhook", "synthetic"
+  razorpayRefId   String?  @unique // idempotency key — nullable for synthetic
+  rawPayload      Json
+  amountPaise     Int
+  currency        String   @default("INR")
+  occurredAt      DateTime
+  createdAt       DateTime @default(now())
+
+  merchant        Merchant  @relation(fields: [merchantId], references: [id])
+  customer        Customer  @relation(fields: [customerId], references: [id])
+  classifiedCase  ClassifiedCase?
+  case            Case?
+
+  @@index([merchantId])
+  @@index([customerId])
+  @@index([scenario])
+  @@index([createdAt])
+}
+
+model ClassifiedCase {
+  id               String               @id @default(cuid())
+  recoveryEventId  String               @unique
+  causeCode        String               // e.g. INSUFFICIENT_FUNDS, CARD_EXPIRED
+  confidence       Float                // 0–1
+  source           ClassificationSource
+  modelVersion     String?
+  createdAt        DateTime             @default(now())
+
+  recoveryEvent    RecoveryEvent @relation(fields: [recoveryEventId], references: [id])
+  case             Case?
+
+  @@index([causeCode])
+}
+
+/// Central state-machine entity for a recovery workflow.
+model Case {
+  id                  String    @id @default(cuid())
+  recoveryEventId     String    @unique
+  classifiedCaseId    String?   @unique
+  merchantId          String
+  customerId          String
+  state               CaseState @default(DETECTED)
+  attemptCount        Int       @default(0)
+  maxAttempts         Int
+  recoveredAmountPaise Int?
+  recoveryLinkId      String?   // Razorpay Payment Link plink_* ID
+  recoveryLinkUrl     String?   // Short URL the customer clicks
+  promisedPaymentDate DateTime? // Used by B2B Invoice scenario (Phase 9)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  recoveryEvent       RecoveryEvent   @relation(fields: [recoveryEventId], references: [id])
+  classifiedCase      ClassifiedCase? @relation(fields: [classifiedCaseId], references: [id])
+  merchant            Merchant        @relation(fields: [merchantId], references: [id])
+  customer            Customer        @relation(fields: [customerId], references: [id])
+  transitions         CaseTransition[]
+  draftMessages       DraftMessage[]
+  scheduledJobs       ScheduledJob[]
+
+  @@index([merchantId])
+  @@index([customerId])
+  @@index([state])
+  @@index([createdAt])
+}
+
+model CaseTransition {
+  id          String   @id @default(cuid())
+  caseId      String
+  fromState   String?  // null for the initial transition
+  toState     String
+  actor       Actor
+  actorUserId String?
+  reasonCode  String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  case        Case  @relation(fields: [caseId], references: [id])
+  actorUser   User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([caseId])
+  @@index([createdAt])
+}
+
+model RecoveryPolicy {
+  id                   String   @id @default(cuid())
+  scenario             Scenario
+  causeCode            String
+  allowedActions       Json     // JSON array, e.g. ["RETRY_LINK","REMINDER"]
+  cooldownMinutes      Int
+  maxAttempts          Int
+  active               Boolean  @default(true)
+  sendWindowStartHour  Int      @default(9)   // Earliest hour IST to send
+  sendWindowEndHour    Int      @default(21)  // Latest hour IST to send
+  updatedAt            DateTime @updatedAt
+
+  @@index([scenario, causeCode])
+}
+
+model DraftMessage {
+  id           String      @id @default(cuid())
+  caseId       String
+  channel      Channel
+  language     Language
+  subject      String?
+  body         String      @db.Text
+  generatedBy  GeneratedBy
+  promptVersion String?
+  createdAt    DateTime    @default(now())
+
+  case         Case              @relation(fields: [caseId], references: [id])
+  deliveryAttempts DeliveryAttempt[]
+
+  @@index([caseId])
+}
+
+model DeliveryAttempt {
+  id             String         @id @default(cuid())
+  draftMessageId String
+  channel        Channel
+  providerRef    String?
+  status         DeliveryStatus
+  errorDetail    String?        @db.Text
+  createdAt      DateTime       @default(now())
+
+  draftMessage   DraftMessage @relation(fields: [draftMessageId], references: [id])
+
+  @@index([draftMessageId])
+}
+
+model ScheduledJob {
+  id        String    @id @default(cuid())
+  caseId    String?
+  jobType   String
+  payload   Json
+  runAt     DateTime
+  status    JobStatus @default(PENDING)
+  attempts  Int       @default(0)
+  lastError String?   @db.Text
+  lockedAt  DateTime? // Used by Phase 4's FOR UPDATE SKIP LOCKED claim
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  case      Case? @relation(fields: [caseId], references: [id])
+
+  @@index([status, runAt])
+  @@index([caseId])
+}
+
+/// Append-only audit trail. The application layer must NEVER issue
+/// UPDATE or DELETE against this table.
+model AuditLog {
+  id          String   @id @default(cuid())
+  entityType  String   // e.g. "Case", "DraftMessage"
+  entityId    String
+  actor       Actor
+  actorUserId String?
+  action      String
+  reasonCode  String?
+  beforeState Json?
+  afterState  Json?
+  createdAt   DateTime @default(now())
+
+  actorUser   User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(VIEWER)
+  createdAt    DateTime @default(now())
+
+  caseTransitions CaseTransition[]
+  auditLogs       AuditLog[]
 }

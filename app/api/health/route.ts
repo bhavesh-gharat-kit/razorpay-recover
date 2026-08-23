@@ -1,27 +1,22 @@
-import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { successResponse, errorResponse } from "@/lib/api/response";
 
 // Future uptime monitors hit this route. It reports app liveness plus a
 // real database round-trip so a "200 OK" here actually means the app can
 // serve requests, not just that the process is running.
 export async function GET() {
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    const merchantCount = await prisma.merchant.count();
 
-    return NextResponse.json({
-      status: "ok",
+    return successResponse({
       db: "connected",
+      merchants: merchantCount,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        status: "error",
-        db: "unreachable",
-        error: error instanceof Error ? error.message : "Unknown error",
-        timestamp: new Date().toISOString(),
-      },
-      { status: 500 },
+    return errorResponse(
+      "DB_UNREACHABLE",
+      error instanceof Error ? error.message : "Unknown database error",
     );
   }
 }
