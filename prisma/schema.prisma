@@ -1,0 +1,17 @@
+// Phase 0 placeholder schema — just enough for `prisma migrate dev` to have
+// something to do. The real data model (Merchant, Case, Event, Action,
+// AuditLog, ScheduledJob, User, etc.) is designed in Phase 1 and will
+// replace this entirely.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model HealthCheck {
+  id Int @id @default(autoincrement())
+}

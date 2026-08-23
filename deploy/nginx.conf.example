@@ -1,0 +1,68 @@
+# Example Nginx reverse-proxy config for the Recover Next.js app.
+#
+# Reference only — not applied anywhere in this repo. Copy to
+# /etc/nginx/sites-available/recover on the target VPS during Phase 10,
+# symlink into sites-enabled, then run Certbot to fill in the managed
+# SSL block below.
+#
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/recover
+#   sudo ln -s /etc/nginx/sites-available/recover /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d your-domain.example.com
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name your-domain.example.com;
+
+    # Certbot will insert its HTTP->HTTPS redirect and SSL server block
+    # here automatically when run with --nginx. Until then this plain
+    # HTTP block proxies straight to the app.
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+
+# --- After `certbot --nginx`, expect a block appended/generated like this ---
+#
+# server {
+#     listen 443 ssl;
+#     listen [::]:443 ssl;
+#     server_name your-domain.example.com;
+#
+#     ssl_certificate     /etc/letsencrypt/live/your-domain.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/your-domain.example.com/privkey.pem;
+#     include              /etc/letsencrypt/options-ssl-nginx.conf;
+#     ssl_dhparam           /etc/letsencrypt/ssl-dhparams.pem;
+#
+#     location / {
+#         proxy_pass http://127.0.0.1:3000;
+#         proxy_http_version 1.1;
+#         proxy_set_header Upgrade $http_upgrade;
+#         proxy_set_header Connection "upgrade";
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#         proxy_cache_bypass $http_upgrade;
+#     }
+# }
+#
+# server {
+#     if ($host = your-domain.example.com) {
+#         return 301 https://$host$request_uri;
+#     }
+#     listen 80;
+#     listen [::]:80;
+#     server_name your-domain.example.com;
+#     return 404;
+# }
