@@ -1,5 +1,5 @@
-// PM2 process definitions. Two processes, one codebase, one deploy — see
-// CLAUDE.md ("No Redis, no BullMQ" / "Two PM2 processes total").
+// PM2 process definitions. Two processes, one codebase, one deploy —
+// no Redis, no BullMQ; the DB is the job queue.
 //
 // Not run yet in this phase — this is config-only scaffolding for
 // Phase 10 (Deployment, Hardening & Demo Rehearsal). To use it later:

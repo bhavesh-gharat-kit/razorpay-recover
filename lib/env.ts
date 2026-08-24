@@ -46,7 +46,7 @@ export const env = {
   RAZORPAY_KEY_SECRET: optional("RAZORPAY_KEY_SECRET", ""),
   RAZORPAY_WEBHOOK_SECRET: optional("RAZORPAY_WEBHOOK_SECRET", ""),
 
-  // Message generation — template-first by default (see CLAUDE.md).
+  // Message generation — template-first by default.
   // LLM drafting is opt-in and off by default.
   USE_LLM_DRAFTING: optionalBoolean("USE_LLM_DRAFTING", false),
   ANTHROPIC_API_KEY: optional("ANTHROPIC_API_KEY", ""),

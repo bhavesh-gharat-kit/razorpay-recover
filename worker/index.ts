@@ -11,7 +11,7 @@
  *   4. Run the detect → classify → decide pipeline directly (same codebase).
  *   5. Log a tick summary.
  *
- * No Redis, no BullMQ — the DB is the queue. See CLAUDE.md.
+ * No Redis, no BullMQ — the DB is the queue.
  */
 
 import cron from "node-cron";
