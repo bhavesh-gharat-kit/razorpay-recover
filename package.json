@@ -11,6 +11,7 @@
     "worker": "tsx watch worker/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "simulate:webhooks": "tsx scripts/simulate-webhooks.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

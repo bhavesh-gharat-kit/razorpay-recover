@@ -50,6 +50,16 @@ export const env = {
   // LLM drafting is opt-in and off by default.
   USE_LLM_DRAFTING: optionalBoolean("USE_LLM_DRAFTING", false),
   ANTHROPIC_API_KEY: optional("ANTHROPIC_API_KEY", ""),
+
+  // Internal task protection — shared secret for cron-triggered endpoints.
+  INTERNAL_TASK_SECRET: optional("INTERNAL_TASK_SECRET", ""),
+
+  // Checkout abandonment detection — minutes to wait before treating
+  // an order as abandoned (default 30).
+  CHECKOUT_ABANDONMENT_GRACE_MINUTES: parseInt(
+    optional("CHECKOUT_ABANDONMENT_GRACE_MINUTES", "30"),
+    10,
+  ),
 } as const;
 
 if (env.USE_LLM_DRAFTING && !env.ANTHROPIC_API_KEY) {

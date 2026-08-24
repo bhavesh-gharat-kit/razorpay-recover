@@ -302,6 +302,7 @@ async function main() {
     prisma.case.deleteMany(),
     prisma.classifiedCase.deleteMany(),
     prisma.recoveryEvent.deleteMany(),
+    prisma.orderTracking.deleteMany(),
     prisma.recoveryPolicy.deleteMany(),
     prisma.customer.deleteMany(),
     prisma.merchant.deleteMany(),

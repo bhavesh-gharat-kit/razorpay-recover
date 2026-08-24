@@ -76,6 +76,12 @@ enum JobStatus {
   FAILED
 }
 
+enum OrderTrackingStatus {
+  CREATED
+  PAID
+  FAILED
+}
+
 enum UserRole {
   ADMIN
   REVIEWER
@@ -96,6 +102,7 @@ model Merchant {
   customers          Customer[]
   recoveryEvents     RecoveryEvent[]
   cases              Case[]
+  orderTrackings     OrderTracking[]
 }
 
 model Customer {
@@ -297,4 +304,29 @@ model User {
 
   caseTransitions CaseTransition[]
   auditLogs       AuditLog[]
+}
+
+/// Lightweight order-lifecycle tracker for checkout abandonment detection.
+/// The webhook receiver writes CREATED rows on `order.paid` and `payment.failed`
+/// events; the abandonment detector queries for CREATED orders past the grace
+/// window that never moved to PAID or FAILED. This is intentionally separate
+/// from RecoveryEvent — we don't want tracking-only rows polluting the
+/// recovery pipeline.
+model OrderTracking {
+  id                String              @id @default(cuid())
+  razorpayOrderId   String              @unique
+  merchantId        String
+  status            OrderTrackingStatus @default(CREATED)
+  amountPaise       Int
+  currency          String              @default("INR")
+  customerEmail     String?
+  customerPhone     String?
+  rawPayload        Json
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  merchant          Merchant @relation(fields: [merchantId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([merchantId])
 }
