@@ -60,6 +60,19 @@ export const env = {
     optional("CHECKOUT_ABANDONMENT_GRACE_MINUTES", "30"),
     10,
   ),
+
+  // Orchestrator guardrails (Phase 4).
+  MAX_CONTACTS_PER_CUSTOMER_PER_DAY: parseInt(
+    optional("MAX_CONTACTS_PER_CUSTOMER_PER_DAY", "2"),
+    10,
+  ),
+
+  // Callback URL for Razorpay Payment Links — defaults to the app's own
+  // webhook endpoint. Override in production with the public domain.
+  RECOVERY_CALLBACK_URL: optional(
+    "RECOVERY_CALLBACK_URL",
+    `http://localhost:${optional("PORT", "3000")}/api/webhooks/razorpay`,
+  ),
 } as const;
 
 if (env.USE_LLM_DRAFTING && !env.ANTHROPIC_API_KEY) {

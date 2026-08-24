@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate:webhooks": "tsx scripts/simulate-webhooks.ts",
+    "test:classification": "tsx scripts/test-classification.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },
@@ -19,14 +20,17 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@prisma/client": "^6.19.3",
     "next": "14.2.35",
+    "node-cron": "^4.6.0",
     "prisma": "^6.19.3",
     "react": "^18",
     "react-dom": "^18"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/node-cron": "^3.0.11",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^6.1.0",
