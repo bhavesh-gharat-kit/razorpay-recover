@@ -17,10 +17,15 @@
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { createPaymentLink } from "@/lib/razorpay/client";
+import { getMessageGenerator } from "@/lib/messaging";
+import type { MessageGenerationInput } from "@/lib/messaging/types";
 import {
   Actor,
   CaseState,
+  Channel,
+  GeneratedBy,
   JobStatus,
+  Language,
   type Case,
 } from "@prisma/client";
 
@@ -350,13 +355,14 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
 // ---------------------------------------------------------------------------
 
 /**
- * Executes a scheduled recovery action for a case.
+ * Executes a scheduled recovery action for a case: generates the outreach
+ * message and persists it as a `DraftMessage`.
  *
- * For Phase 4 this is a stub that logs "would send message here" and
- * transitions the case to ACTION_SENT + increments attemptCount. Phase 5/6
- * will replace the stub body with real message generation + channel sending.
- * The function signature and boundary are kept clean so swapping is a small
- * diff.
+ * This does NOT send anything yet (Phase 6) and does NOT transition the
+ * case to ACTION_SENT or increment attemptCount — those happen once the
+ * channel adapter actually delivers the message. The case is left in
+ * ACTION_SCHEDULED with a `draft_created` CaseTransition so Phase 6's
+ * send step has a clean, small diff to make.
  */
 export async function executeScheduledAction(
   payload: ScheduledActionPayload,
@@ -365,7 +371,12 @@ export async function executeScheduledAction(
 
   const caseRecord = await prisma.case.findUniqueOrThrow({
     where: { id: caseId },
-    include: { customer: true, recoveryEvent: true },
+    include: {
+      customer: true,
+      merchant: true,
+      recoveryEvent: true,
+      classifiedCase: true,
+    },
   });
 
   // Guard: only act on ACTION_SCHEDULED cases.
@@ -377,22 +388,66 @@ export async function executeScheduledAction(
     return;
   }
 
-  // --- STUB: Phase 5/6 will replace this block with real calls to ---
-  // --- message generation + channel adapter pipeline.             ---
-  console.log(
-    `[orchestrator] STUB: would send ${action} message to ` +
-      `${caseRecord.customer.email} for case ${caseId} ` +
-      `(link: ${recoveryLinkUrl ?? "none"})`,
-  );
-  // --- END STUB ---
-
-  // Transition to ACTION_SENT and increment attemptCount.
-  await prisma.$transaction(async (tx) => {
-    await tx.case.update({
-      where: { id: caseId },
+  const linkUrl = caseRecord.recoveryLinkUrl ?? recoveryLinkUrl;
+  if (!linkUrl) {
+    // Guardrail: never draft a message with no recovery link to send.
+    console.error(
+      `[orchestrator] No recovery link available for case ${caseId} — ` +
+        "skipping draft generation.",
+    );
+    await prisma.caseTransition.create({
       data: {
-        state: CaseState.ACTION_SENT,
-        attemptCount: { increment: 1 },
+        caseId,
+        fromState: CaseState.ACTION_SCHEDULED,
+        toState: CaseState.ACTION_SCHEDULED,
+        actor: Actor.SYSTEM,
+        reasonCode: "draft_generation_failed_no_link",
+      },
+    });
+    return;
+  }
+
+  const causeCode = caseRecord.classifiedCase?.causeCode ?? "UNCLASSIFIED";
+
+  // Channel/language selection is hard-coded for the checkout drop-off
+  // path built in Phases 1–8 — email is the primary channel (Brevo,
+  // Phase 6) and templates are written in EN by default. Per-customer
+  // channel/language preference is a natural Phase 8+ dashboard addition,
+  // not a Phase 5 concern.
+  const channel: MessageGenerationInput["channel"] = "EMAIL";
+  const language: MessageGenerationInput["language"] = "EN";
+
+  const generationInput: MessageGenerationInput = {
+    caseId,
+    causeCode,
+    scenario: caseRecord.recoveryEvent.scenario,
+    channel,
+    language,
+    customerName: caseRecord.customer.name,
+    merchantName: caseRecord.merchant.name,
+    amountPaise: caseRecord.recoveryEvent.amountPaise,
+    currency: caseRecord.recoveryEvent.currency,
+    recoveryLink: linkUrl,
+    attemptNumber: caseRecord.attemptCount + 1,
+  };
+
+  const result = await getMessageGenerator().generate(generationInput);
+
+  // A fallback occurred if LLM drafting is enabled but the result came
+  // back TEMPLATE-generated (llmGenerator falls back internally on error).
+  const isFallback =
+    env.USE_LLM_DRAFTING && result.generatedBy === GeneratedBy.TEMPLATE;
+
+  await prisma.$transaction(async (tx) => {
+    const draft = await tx.draftMessage.create({
+      data: {
+        caseId,
+        channel: channel as Channel,
+        language: language as Language,
+        subject: result.subject,
+        body: result.body,
+        generatedBy: result.generatedBy as GeneratedBy,
+        promptVersion: result.promptVersion,
       },
     });
 
@@ -400,31 +455,35 @@ export async function executeScheduledAction(
       data: {
         caseId,
         fromState: CaseState.ACTION_SCHEDULED,
-        toState: CaseState.ACTION_SENT,
+        toState: CaseState.ACTION_SCHEDULED,
         actor: Actor.SYSTEM,
-        reasonCode: "action_sent",
+        reasonCode: "draft_created",
         metadata: {
+          draftMessageId: draft.id,
+          channel,
+          language,
+          generatedBy: result.generatedBy,
+          promptVersion: result.promptVersion ?? null,
+          isFallback,
           action,
-          recoveryLinkUrl,
-          stub: true, // Remove when real sending is wired in Phase 5/6.
         },
       },
     });
 
     await tx.auditLog.create({
       data: {
-        entityType: "Case",
-        entityId: caseId,
+        entityType: "DraftMessage",
+        entityId: draft.id,
         actor: Actor.SYSTEM,
-        action: "action_sent",
-        reasonCode: "action_sent",
+        action: "draft_created",
+        reasonCode: "draft_created",
         beforeState: { state: CaseState.ACTION_SCHEDULED },
         afterState: {
-          state: CaseState.ACTION_SENT,
-          attemptCount: caseRecord.attemptCount + 1,
-          action,
-          recoveryLinkUrl,
-          stub: true,
+          draftMessageId: draft.id,
+          channel,
+          language,
+          generatedBy: result.generatedBy,
+          isFallback,
         },
       },
     });
