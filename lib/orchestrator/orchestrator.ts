@@ -19,15 +19,27 @@ import { env } from "@/lib/env";
 import { createPaymentLink } from "@/lib/razorpay/client";
 import { getMessageGenerator } from "@/lib/messaging";
 import type { MessageGenerationInput } from "@/lib/messaging/types";
+import { getChannelAdapter } from "@/lib/channels";
 import {
   Actor,
   CaseState,
   Channel,
+  DeliveryStatus,
   GeneratedBy,
   JobStatus,
   Language,
   type Case,
+  type DraftMessage,
+  type Scenario,
 } from "@prisma/client";
+
+/** Case shape carrying the relations `sendDraftAndTransition` needs. */
+type CaseWithSendRelations = Case & {
+  customer: { name: string; email: string; phone: string };
+  merchant: { name: string };
+  recoveryEvent: { scenario: Scenario };
+  classifiedCase: { causeCode: string } | null;
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -168,7 +180,8 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
   // --- Guardrail: Cooldown ---
   const lastActionTransition = caseRecord.transitions.find(
     (t) =>
-      t.reasonCode === "action_scheduled" || t.reasonCode === "action_sent",
+      t.reasonCode === "action_scheduled" ||
+      t.reasonCode.startsWith("message_sent_"),
   );
   if (lastActionTransition) {
     const elapsedMs =
@@ -181,13 +194,15 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
 
   // --- Guardrail: Per-customer contact cap ---
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  // reasonCode is "message_sent_<channel>" (Phase 6) — match by prefix so
+  // the cap applies across EMAIL/SMS/WHATSAPP uniformly.
   const recentContactCount = await prisma.caseTransition.count({
     where: {
       case: {
         customerId: caseRecord.customerId,
         id: { not: caseRecord.id }, // other cases only
       },
-      reasonCode: "action_sent",
+      reasonCode: { startsWith: "message_sent_" },
       createdAt: { gte: twentyFourHoursAgo },
     },
   });
@@ -356,13 +371,9 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
 
 /**
  * Executes a scheduled recovery action for a case: generates the outreach
- * message and persists it as a `DraftMessage`.
- *
- * This does NOT send anything yet (Phase 6) and does NOT transition the
- * case to ACTION_SENT or increment attemptCount — those happen once the
- * channel adapter actually delivers the message. The case is left in
- * ACTION_SCHEDULED with a `draft_created` CaseTransition so Phase 6's
- * send step has a clean, small diff to make.
+ * message, persists it as a `DraftMessage`, sends it through the channel
+ * adapter, and transitions the case based on delivery outcome (see
+ * `sendDraftAndTransition` below).
  */
 export async function executeScheduledAction(
   payload: ScheduledActionPayload,
@@ -438,7 +449,7 @@ export async function executeScheduledAction(
   const isFallback =
     env.USE_LLM_DRAFTING && result.generatedBy === GeneratedBy.TEMPLATE;
 
-  await prisma.$transaction(async (tx) => {
+  const draft = await prisma.$transaction(async (tx) => {
     const draft = await tx.draftMessage.create({
       data: {
         caseId,
@@ -487,7 +498,166 @@ export async function executeScheduledAction(
         },
       },
     });
+
+    return draft;
   });
+
+  await sendDraftAndTransition(caseRecord as CaseWithSendRelations, draft, channel, action);
+}
+
+// ---------------------------------------------------------------------------
+// sendDraftAndTransition — Phase 6: actually deliver the draft
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends a `DraftMessage` through the appropriate channel adapter, records a
+ * `DeliveryAttempt`, and transitions the case based on the outcome:
+ *
+ *   - SENT   -> case moves to ACTION_SENT, attemptCount increments,
+ *               CaseTransition `reasonCode: "message_sent_<channel>"`.
+ *   - FAILED, attempts remaining -> case stays ACTION_SCHEDULED, a new
+ *               ScheduledJob is created `cooldownMinutes` out (reuses the
+ *               Phase 4 guardrail machinery on the next cycle),
+ *               CaseTransition `reasonCode: "delivery_failed_will_retry"`.
+ *   - FAILED, at max attempts -> case is escalated,
+ *               CaseTransition `reasonCode: "delivery_failed_max_attempts"`.
+ */
+async function sendDraftAndTransition(
+  caseRecord: CaseWithSendRelations,
+  draft: DraftMessage,
+  channel: Channel,
+  action: string,
+): Promise<void> {
+  const adapter = getChannelAdapter(channel);
+
+  const sendResult = await adapter.send({
+    channel,
+    to: {
+      email: caseRecord.customer.email,
+      phone: caseRecord.customer.phone,
+      name: caseRecord.customer.name,
+    },
+    subject: draft.subject ?? undefined,
+    body: draft.body,
+    metadata: { caseId: caseRecord.id, merchantName: caseRecord.merchant.name },
+  });
+
+  const deliveryAttempt = await prisma.deliveryAttempt.create({
+    data: {
+      draftMessageId: draft.id,
+      channel,
+      status:
+        sendResult.status === "SENT"
+          ? DeliveryStatus.SENT
+          : DeliveryStatus.FAILED,
+      providerRef: sendResult.providerRef,
+      errorDetail: sendResult.errorDetail,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      entityType: "DeliveryAttempt",
+      entityId: deliveryAttempt.id,
+      actor: Actor.SYSTEM,
+      action: "delivery_attempted",
+      reasonCode: sendResult.status === "SENT" ? "delivery_sent" : "delivery_failed",
+      beforeState: { draftMessageId: draft.id, channel },
+      afterState: {
+        status: sendResult.status,
+        providerRef: sendResult.providerRef ?? null,
+        errorDetail: sendResult.errorDetail ?? null,
+      },
+    },
+  });
+
+  if (sendResult.status === "SENT") {
+    await prisma.$transaction(async (tx) => {
+      await tx.case.update({
+        where: { id: caseRecord.id },
+        data: {
+          state: CaseState.ACTION_SENT,
+          attemptCount: { increment: 1 },
+        },
+      });
+
+      await tx.caseTransition.create({
+        data: {
+          caseId: caseRecord.id,
+          fromState: CaseState.ACTION_SCHEDULED,
+          toState: CaseState.ACTION_SENT,
+          actor: Actor.SYSTEM,
+          reasonCode: `message_sent_${channel.toLowerCase()}`,
+          metadata: {
+            draftMessageId: draft.id,
+            deliveryAttemptId: deliveryAttempt.id,
+            providerRef: sendResult.providerRef ?? null,
+            channel,
+          },
+        },
+      });
+    });
+    return;
+  }
+
+  // --- Delivery failed: retry (within attempt budget) or escalate. ---
+  const policy = await prisma.recoveryPolicy.findFirst({
+    where: {
+      scenario: caseRecord.recoveryEvent.scenario,
+      causeCode: caseRecord.classifiedCase?.causeCode ?? "",
+      active: true,
+    },
+  });
+
+  // Mirrors decideNextAction's effective-max-attempts guardrail — the more
+  // restrictive of the case-level and policy-level caps wins. No policy on
+  // this failure path (shouldn't normally happen, since decideNextAction
+  // already required one to schedule the action) falls back to the case's
+  // own cap so a delivery failure never retries forever.
+  const effectiveMaxAttempts = policy
+    ? Math.min(caseRecord.maxAttempts, policy.maxAttempts)
+    : caseRecord.maxAttempts;
+
+  if (caseRecord.attemptCount < effectiveMaxAttempts) {
+    const cooldownMinutes = policy?.cooldownMinutes ?? 60;
+    const runAt = new Date(Date.now() + cooldownMinutes * 60 * 1000);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.caseTransition.create({
+        data: {
+          caseId: caseRecord.id,
+          fromState: CaseState.ACTION_SCHEDULED,
+          toState: CaseState.ACTION_SCHEDULED,
+          actor: Actor.SYSTEM,
+          reasonCode: "delivery_failed_will_retry",
+          metadata: {
+            draftMessageId: draft.id,
+            deliveryAttemptId: deliveryAttempt.id,
+            errorDetail: sendResult.errorDetail ?? null,
+            channel,
+            runAt: runAt.toISOString(),
+          },
+        },
+      });
+
+      await tx.scheduledJob.create({
+        data: {
+          caseId: caseRecord.id,
+          jobType: "execute_recovery_action",
+          payload: {
+            caseId: caseRecord.id,
+            action,
+            recoveryLinkUrl: caseRecord.recoveryLinkUrl ?? "",
+          },
+          runAt,
+          status: JobStatus.PENDING,
+        },
+      });
+    });
+    return;
+  }
+
+  await escalateCase(caseRecord, "delivery_failed_max_attempts");
 }
 
 // ---------------------------------------------------------------------------

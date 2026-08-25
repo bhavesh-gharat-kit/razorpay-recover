@@ -29,6 +29,12 @@ const mockPrisma = {
   scheduledJob: {
     create: vi.fn(),
   },
+  draftMessage: {
+    create: vi.fn(),
+  },
+  deliveryAttempt: {
+    create: vi.fn(),
+  },
   auditLog: {
     create: vi.fn(),
   },
@@ -47,6 +53,7 @@ vi.mock("@/lib/env", () => ({
     RECOVERY_CALLBACK_URL: "http://localhost:3000/api/webhooks/razorpay",
     RAZORPAY_KEY_ID: "",
     RAZORPAY_KEY_SECRET: "",
+    USE_LLM_DRAFTING: false,
   },
 }));
 
@@ -57,6 +64,22 @@ vi.mock("@/lib/razorpay/client", () => ({
     shortUrl: "https://example.com/pay/test",
     isPlaceholder: true,
   }),
+}));
+
+const mockGenerate = vi.fn().mockResolvedValue({
+  subject: "Your payment didn't go through",
+  body: "Please pay here: https://example.com/pay/test",
+  generatedBy: "TEMPLATE",
+});
+
+vi.mock("@/lib/messaging", () => ({
+  getMessageGenerator: () => ({ generate: mockGenerate }),
+}));
+
+const mockChannelSend = vi.fn();
+
+vi.mock("@/lib/channels", () => ({
+  getChannelAdapter: () => ({ send: mockChannelSend }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -71,6 +94,7 @@ function makeCase(overrides: Record<string, unknown> = {}) {
     maxAttempts: 3,
     customerId: "cust_1",
     promisedPaymentDate: null,
+    recoveryLinkUrl: "https://example.com/pay/test",
     classifiedCase: { causeCode: "INSUFFICIENT_FUNDS" },
     recoveryEvent: {
       scenario: "CHECKOUT_DROPOFF",
@@ -82,6 +106,7 @@ function makeCase(overrides: Record<string, unknown> = {}) {
       email: "test@example.com",
       phone: "+919876543210",
     },
+    merchant: { name: "Test Merchant" },
     transitions: [],
     ...overrides,
   };
@@ -235,6 +260,129 @@ describe("Orchestrator guardrails", () => {
         }),
       }),
     );
+  });
+});
+
+describe("executeScheduledAction — send + transition on delivery outcome", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(
+      makeCase({ state: CaseState.ACTION_SCHEDULED }),
+    );
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(makePolicy());
+    mockPrisma.draftMessage.create.mockResolvedValue({
+      id: "draft_1",
+      subject: "Your payment didn't go through",
+      body: "Please pay here: https://example.com/pay/test",
+    });
+    mockPrisma.deliveryAttempt.create.mockResolvedValue({ id: "delivery_1" });
+  });
+
+  const payload = {
+    caseId: "case_test",
+    action: "RETRY_LINK",
+    recoveryLinkUrl: "https://example.com/pay/test",
+  };
+
+  it("transitions to ACTION_SENT and increments attemptCount on SENT", async () => {
+    const { executeScheduledAction } = await import("./orchestrator");
+    mockChannelSend.mockResolvedValue({
+      status: "SENT",
+      providerRef: "brevo-msg-1",
+    });
+
+    await executeScheduledAction(payload);
+
+    expect(mockPrisma.deliveryAttempt.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SENT", providerRef: "brevo-msg-1" }),
+      }),
+    );
+    expect(mockPrisma.case.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          state: CaseState.ACTION_SENT,
+          attemptCount: { increment: 1 },
+        }),
+      }),
+    );
+    expect(mockPrisma.caseTransition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          toState: CaseState.ACTION_SENT,
+          reasonCode: "message_sent_email",
+        }),
+      }),
+    );
+    // Retry/escalate machinery should never fire on success.
+    expect(mockPrisma.scheduledJob.create).not.toHaveBeenCalled();
+  });
+
+  it("stays ACTION_SCHEDULED and schedules a retry job on FAILED with attempts remaining", async () => {
+    const { executeScheduledAction } = await import("./orchestrator");
+    mockChannelSend.mockResolvedValue({
+      status: "FAILED",
+      errorDetail: "Invalid recipient email",
+    });
+
+    await executeScheduledAction(payload);
+
+    expect(mockPrisma.deliveryAttempt.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "FAILED",
+          errorDetail: "Invalid recipient email",
+        }),
+      }),
+    );
+    // No ACTION_SENT transition.
+    expect(mockPrisma.case.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ state: CaseState.ACTION_SENT }),
+      }),
+    );
+    expect(mockPrisma.caseTransition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          toState: CaseState.ACTION_SCHEDULED,
+          reasonCode: "delivery_failed_will_retry",
+        }),
+      }),
+    );
+    expect(mockPrisma.scheduledJob.create).toHaveBeenCalled();
+  });
+
+  it("escalates on FAILED once attempts are exhausted", async () => {
+    const { executeScheduledAction } = await import("./orchestrator");
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(
+      makeCase({
+        state: CaseState.ACTION_SCHEDULED,
+        attemptCount: 3,
+        maxAttempts: 3,
+      }),
+    );
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(
+      makePolicy({ maxAttempts: 3 }),
+    );
+    mockChannelSend.mockResolvedValue({
+      status: "FAILED",
+      errorDetail: "network_error",
+    });
+
+    await executeScheduledAction(payload);
+
+    expect(mockPrisma.case.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { state: CaseState.ESCALATED } }),
+    );
+    expect(mockPrisma.caseTransition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          toState: CaseState.ESCALATED,
+          reasonCode: "delivery_failed_max_attempts",
+        }),
+      }),
+    );
+    expect(mockPrisma.scheduledJob.create).not.toHaveBeenCalled();
   });
 });
 

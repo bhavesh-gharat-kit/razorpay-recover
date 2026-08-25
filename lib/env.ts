@@ -54,6 +54,10 @@ export const env = {
   // Internal task protection — shared secret for cron-triggered endpoints.
   INTERNAL_TASK_SECRET: optional("INTERNAL_TASK_SECRET", ""),
 
+  // A real inbox that receives test recovery emails during manual QA
+  // (scripts/test-send-email.ts). Empty in CI / production.
+  TEST_RECIPIENT_EMAIL: optional("TEST_RECIPIENT_EMAIL", ""),
+
   // Checkout abandonment detection — minutes to wait before treating
   // an order as abandoned (default 30).
   CHECKOUT_ABANDONMENT_GRACE_MINUTES: parseInt(

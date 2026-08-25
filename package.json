@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "simulate:webhooks": "tsx scripts/simulate-webhooks.ts",
     "test:classification": "tsx scripts/test-classification.ts",
+    "test:send-email": "tsx --env-file=.env scripts/test-send-email.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },
