@@ -4,7 +4,7 @@
  * Triggers one worker-tick's worth of work on demand — useful during
  * development without waiting 60 seconds for the cron loop.
  *
- * Protected by INTERNAL_TASK_SECRET header check (real auth in Phase 7).
+ * Gated to ADMIN sessions (Phase 7).
  */
 
 import { NextRequest } from "next/server";
@@ -17,20 +17,15 @@ import {
   executeScheduledAction,
 } from "@/lib/orchestrator/orchestrator";
 import type { ScheduledActionPayload } from "@/lib/orchestrator/orchestrator";
-import { CaseState, JobStatus } from "@prisma/client";
+import { CaseState, JobStatus, UserRole } from "@prisma/client";
+import { requireRole } from "@/lib/auth/requireRole";
+import { emitBatchSummary } from "@/lib/events/emit";
 
 export async function POST(request: NextRequest) {
-  // Verify internal task secret.
-  const secret = process.env.INTERNAL_TASK_SECRET ?? "";
-  const provided = request.headers.get("x-internal-secret") ?? "";
+  const auth = await requireRole(request, [UserRole.ADMIN]);
+  if (auth.response) return auth.response;
 
-  if (!secret || provided !== secret) {
-    return errorResponse(
-      "UNAUTHORIZED",
-      "Invalid or missing internal secret",
-      401,
-    );
-  }
+  const tickStartedAt = new Date();
 
   try {
     const results = {
@@ -142,6 +137,19 @@ export async function POST(request: NextRequest) {
         console.error(`[orchestrator-tick] Decide error ${c.id}:`, err);
       }
     }
+
+    // Emit a batch_summary SystemEvent — same shape the worker emits — so
+    // the dashboard's SSE stream picks up this manually-triggered tick too.
+    const recoveredThisTick = await prisma.case.count({
+      where: { state: CaseState.RECOVERED, updatedAt: { gte: tickStartedAt } },
+    });
+    await emitBatchSummary(prisma, {
+      processed: results.jobsClaimed,
+      classified: results.classified,
+      scheduled: results.scheduled,
+      sent: results.jobsSucceeded,
+      recovered: recoveredThisTick,
+    });
 
     return successResponse(results);
   } catch (error) {

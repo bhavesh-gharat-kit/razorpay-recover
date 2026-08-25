@@ -11,6 +11,9 @@ import { handlePaymentFailed } from "./payment-failed";
 import { handlePaymentLinkPaid } from "./payment-link-paid";
 import { handlePaymentCaptured } from "./payment-captured";
 import { handleOrderPaid } from "./order-paid";
+import { handleSubscriptionChargedFailed } from "./subscription-charged-failed";
+import { handleSubscriptionHalted } from "./subscription-halted";
+import { handleSubscriptionResolved } from "./subscription-resolved";
 
 /**
  * Map of Razorpay event type → handler function.
@@ -23,6 +26,11 @@ export const eventHandlers: Record<string, EventHandler> = {
   "payment_link.paid": handlePaymentLinkPaid,
   "payment.captured": handlePaymentCaptured,
   "order.paid": handleOrderPaid,
+  // Subscription Failure scenario (Phase 9)
+  "subscription.charged.failed": handleSubscriptionChargedFailed,
+  "subscription.halted": handleSubscriptionHalted,
+  "subscription.activated": handleSubscriptionResolved,
+  "subscription.completed": handleSubscriptionResolved,
 };
 
 export type { EventHandler, HandlerResult } from "./types";

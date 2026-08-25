@@ -14,6 +14,7 @@
 import { prisma } from "@/lib/db";
 import { CaseState, Actor } from "@prisma/client";
 import type { HandlerResult } from "./types";
+import { emitCaseTransition, emitRecoveryDetected } from "@/lib/events/emit";
 
 /** Case states where auto-recovery makes sense. */
 const RECOVERABLE_STATES: CaseState[] = [
@@ -40,6 +41,7 @@ export async function handlePaymentLinkPaid(
   // Find the Case whose recoveryLinkId matches this Payment Link.
   const caseRecord = await prisma.case.findFirst({
     where: { recoveryLinkId: paymentLinkId },
+    include: { classifiedCase: { select: { causeCode: true } } },
   });
 
   if (!caseRecord) {
@@ -98,6 +100,18 @@ export async function handlePaymentLinkPaid(
           recoveredAmountPaise,
         },
       },
+    });
+
+    await emitCaseTransition(tx, {
+      caseId: caseRecord.id,
+      fromState: caseRecord.state,
+      toState: CaseState.RECOVERED,
+      causeCode: caseRecord.classifiedCase?.causeCode ?? null,
+    });
+
+    await emitRecoveryDetected(tx, {
+      caseId: caseRecord.id,
+      amountPaise: recoveredAmountPaise,
     });
   });
 

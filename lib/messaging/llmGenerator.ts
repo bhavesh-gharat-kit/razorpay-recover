@@ -59,6 +59,17 @@ Razorpay. Tone rules, no exceptions:
   the same expired card will fail again.
 - For an INSUFFICIENT_FUNDS cause, never say the customer doesn't have
   enough money — frame it as "the payment couldn't be processed".
+- For a MANDATE_LAPSED cause (Phase 9), the subscription's auto-pay
+  authorization itself has expired or was revoked — this is NOT fixed by
+  retrying. Explicitly ask the customer to re-authorize; never say "try
+  again" or imply a retry alone will work.
+- For a MANDATE_EXPIRED_CARD cause, same as CARD_EXPIRED — ask the
+  customer to add a new card, not just retry.
+- For action FRIENDLY_NUDGE (Phase 9, invoice tier 1), keep it low-pressure
+  and friendly — this invoice is only a few days overdue.
+- For action FIRM_REMINDER (Phase 9, invoice tier 2), be professional and
+  state the overdue fact plainly, but still never threaten — no "or else",
+  no legal language, just a clear ask to avoid disruption to the account.
 
 ${HINGLISH_STYLE_GUIDE}
 
@@ -69,7 +80,11 @@ or re-derive them:
 - customerName: ${input.customerName}
 - merchantName: ${input.merchantName}
 - amount: ${formatAmountINR(input.amountPaise, input.currency)}
-- recoveryLink: ${input.recoveryLink}
+- recoveryLink: ${input.recoveryLink}${
+    input.invoiceNumber ? `\n- invoiceNumber: ${input.invoiceNumber}` : ""
+  }${input.dueDateLabel ? `\n- dueDate: ${input.dueDateLabel}` : ""}${
+    input.daysOverdue != null ? `\n- daysOverdue: ${input.daysOverdue}` : ""
+  }
 
 Respond with ONLY a JSON object, no markdown fences, no commentary:
 ${
@@ -84,7 +99,9 @@ function buildUserPrompt(input: MessageGenerationInput): string {
   return (
     `Draft a ${input.attemptNumber > 1 ? "follow-up" : "first"} recovery message ` +
     `for cause code ${input.causeCode}, channel ${input.channel}, language ${input.language}, ` +
-    `attempt number ${input.attemptNumber}.`
+    `attempt number ${input.attemptNumber}` +
+    (input.action ? `, action ${input.action}` : "") +
+    `.`
   );
 }
 

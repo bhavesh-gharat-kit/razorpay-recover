@@ -21,6 +21,19 @@ export interface MessageGenerationInput {
   recoveryLink: string;
   /** 1st attempt vs 2nd — tone can differ (retries acknowledge prior contact). */
   attemptNumber: number;
+  /**
+   * The orchestrator's chosen action for this send (e.g. "RETRY_LINK",
+   * "RE_AUTH_LINK", "FRIENDLY_NUDGE", "FIRM_REMINDER") — Phase 9. Mainly
+   * used to disambiguate INVOICE_OVERDUE's graduated-escalation copy,
+   * since the causeCode alone is the same at every tier.
+   */
+  action?: string;
+  /** INVOICE_OVERDUE only — real invoice number, never a placeholder. */
+  invoiceNumber?: string;
+  /** INVOICE_OVERDUE only — days past the due date, floored at 0. */
+  daysOverdue?: number;
+  /** INVOICE_OVERDUE only — the due date, pre-formatted for display. */
+  dueDateLabel?: string;
 }
 
 export interface MessageGenerationResult {

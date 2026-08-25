@@ -133,6 +133,10 @@ model RecoveryEvent {
   amountPaise     Int
   currency        String   @default("INR")
   occurredAt      DateTime
+  /// B2B Invoice Overdue scenario only (Phase 9). The classifier's only
+  /// signal for INVOICE_OVERDUE is "is this date in the past?" — no
+  /// embedding fallback needed. Null for the other two scenarios.
+  dueDate         DateTime?
   createdAt       DateTime @default(now())
 
   merchant        Merchant  @relation(fields: [merchantId], references: [id])
@@ -220,6 +224,15 @@ model RecoveryPolicy {
   active               Boolean  @default(true)
   sendWindowStartHour  Int      @default(9)   // Earliest hour IST to send
   sendWindowEndHour    Int      @default(21)  // Latest hour IST to send
+  /// Graduated escalation support for INVOICE_OVERDUE (Phase 9). `null`
+  /// means "applies regardless of tier" — every checkout/subscription
+  /// policy, and the default for this field. For INVOICE_OVERDUE, multiple
+  /// rows share one (scenario, causeCode) pair and are disambiguated by
+  /// tier: 1 = 1-3 days overdue, 2 = 4-10 days, 3 = 11+ days. The
+  /// orchestrator computes daysOverdue -> tier and looks up
+  /// (scenario, causeCode, escalationTier) instead of just
+  /// (scenario, causeCode) — see getEscalationTier() in orchestrator.ts.
+  escalationTier       Int?
   updatedAt            DateTime @updatedAt
 
   @@index([scenario, causeCode])
@@ -304,6 +317,21 @@ model User {
 
   caseTransitions CaseTransition[]
   auditLogs       AuditLog[]
+}
+
+/// Cross-process signal for the SSE endpoint (Phase 8). The worker process
+/// (and any Next.js route that mutates cases outside a request the browser
+/// is watching) writes a row here on a meaningful transition; the SSE route
+/// polls for rows newer than its last check and relays them to connected
+/// clients. Rows are only ever inserted, never updated — the SSE poller is
+/// the only reader. Left to age out after ~1 hour; Phase 10 can add a sweep.
+model SystemEvent {
+  id        String   @id @default(cuid())
+  eventType String   // "case_transition" | "batch_summary" | "recovery_detected"
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }
 
 /// Lightweight order-lifecycle tracker for checkout abandonment detection.

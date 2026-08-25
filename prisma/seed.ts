@@ -12,7 +12,14 @@
  *         (wired via package.json's prisma.seed field)
  */
 
-import { PrismaClient, Scenario, Actor, CaseState } from "@prisma/client";
+import {
+  PrismaClient,
+  Scenario,
+  Actor,
+  CaseState,
+  UserRole,
+} from "@prisma/client";
+import bcrypt from "bcrypt";
 
 const prisma = new PrismaClient();
 
@@ -257,6 +264,24 @@ function generateRazorpayPaymentId(): string | null {
   return id;
 }
 
+function generateRazorpayId(prefix: string): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let id = `${prefix}_`;
+  for (let i = 0; i < 14; i++) id += chars[Math.floor(rand() * chars.length)];
+  return id;
+}
+
+/** A date `daysAgo` days in the past, at a random time of day. */
+function daysAgoDate(daysAgo: number): Date {
+  const now = new Date();
+  const ms =
+    now.getTime() -
+    daysAgo * 24 * 60 * 60 * 1000 -
+    randInt(0, 23) * 60 * 60 * 1000 -
+    randInt(0, 59) * 60 * 1000;
+  return new Date(ms);
+}
+
 function recentDate(daysAgo: number): Date {
   const now = new Date();
   const ms =
@@ -322,7 +347,7 @@ async function main() {
   // -------------------------------------------------------------------------
   // 2. Customers — ~30 spread across all 3 merchants
   // -------------------------------------------------------------------------
-  const customersByMerchant: Record<string, { id: string; email: string; phone: string }[]> = {};
+  const customersByMerchant: Record<string, { id: string; name: string; email: string; phone: string }[]> = {};
   for (const m of merchants) customersByMerchant[m.id] = [];
 
   // Merchant 1 (QuickCart) gets ~15, Merchant 2 gets ~8, Merchant 3 gets ~7
@@ -359,6 +384,7 @@ async function main() {
       });
       customersByMerchant[merchant.id].push({
         id: customer.id,
+        name: customer.name,
         email: customer.email,
         phone: customer.phone,
       });
@@ -500,6 +526,329 @@ async function main() {
   console.log(`  Created ${events.length} Case records (all DETECTED) with initial transitions.`);
 
   // -------------------------------------------------------------------------
+  // 3b/4b. RecoveryEvents + Cases — subscription failures for merchant #2
+  // (Phase 9). Distribution target: ~40% insufficient funds, ~35% lapsed
+  // mandate (split across both rule paths — subscription.halted and
+  // subscription.charged.failed with "mandate" wording — so both get
+  // demoable coverage), ~25% expired mandate card.
+  // -------------------------------------------------------------------------
+  interface SubscriptionCauseTemplate {
+    causeCode: "MANDATE_INSUFFICIENT_FUNDS" | "MANDATE_LAPSED" | "MANDATE_EXPIRED_CARD";
+    event: "subscription.charged.failed" | "subscription.halted";
+    errorCode?: string;
+    errorDescription?: string;
+  }
+
+  // Exact stratified counts rather than weighted random picks — at N=28,
+  // a probabilistic draw can land well off-target for the rarer causes;
+  // fixed counts guarantee the documented ~40/35/25 split every run
+  // (same approach as the invoice tier counts below).
+  const SUBSCRIPTION_CAUSE_SPECS: { count: number; cause: SubscriptionCauseTemplate }[] = [
+    {
+      count: 11, // ~40% — insufficient funds
+      cause: {
+        causeCode: "MANDATE_INSUFFICIENT_FUNDS",
+        event: "subscription.charged.failed",
+        errorCode: "BAD_REQUEST_ERROR",
+        errorDescription:
+          "The recurring charge could not be completed due to insufficient funds in the account.",
+      },
+    },
+    {
+      count: 7, // lapsed mandate via subscription.halted
+      cause: { causeCode: "MANDATE_LAPSED", event: "subscription.halted" },
+    },
+    {
+      count: 3, // lapsed mandate via subscription.charged.failed wording
+      cause: {
+        causeCode: "MANDATE_LAPSED",
+        event: "subscription.charged.failed",
+        errorCode: "BAD_REQUEST_ERROR",
+        errorDescription:
+          "The mandate for this subscription has expired and needs to be re-authorized by the customer.",
+      },
+    }, // ^ combined with the row above: ~35% lapsed mandate
+    {
+      count: 7, // ~25% — expired mandate card
+      cause: {
+        causeCode: "MANDATE_EXPIRED_CARD",
+        event: "subscription.charged.failed",
+        errorCode: "BAD_REQUEST_ERROR",
+        errorDescription:
+          "The card linked to this subscription has expired. Please add a new card to continue.",
+      },
+    },
+  ];
+
+  const SUBSCRIPTION_EVENT_COUNT = SUBSCRIPTION_CAUSE_SPECS.reduce((sum, s) => sum + s.count, 0);
+  const merchant2 = merchants[1];
+  const m2Customers = customersByMerchant[merchant2.id];
+  const subscriptionCauseCounts: Record<string, number> = {};
+  const subscriptionEvents: EventRecord[] = [];
+
+  for (const spec of SUBSCRIPTION_CAUSE_SPECS) {
+   for (let i = 0; i < spec.count; i++) {
+    const customer = pick(m2Customers);
+    const cause = spec.cause;
+    const amountPaise = randInt(19900, 499900); // ₹199 to ₹4,999 (recurring plan)
+    const occurredAt = recentDate(rand() * 10); // spread over last 10 days
+    const subscriptionId = generateRazorpayId("sub");
+    const planId = generateRazorpayId("plan");
+
+    subscriptionCauseCounts[cause.causeCode] = (subscriptionCauseCounts[cause.causeCode] || 0) + 1;
+
+    const subscriptionEntity = {
+      id: subscriptionId,
+      entity: "subscription",
+      plan_id: planId,
+      customer_id: generateRazorpayId("cust"),
+      status: cause.event === "subscription.halted" ? "halted" : "active",
+      current_start: Math.floor(occurredAt.getTime() / 1000) - 30 * 24 * 60 * 60,
+      current_end: Math.floor(occurredAt.getTime() / 1000),
+      paid_count: randInt(1, 11),
+      total_count: 12,
+      created_at: Math.floor(occurredAt.getTime() / 1000) - 90 * 24 * 60 * 60,
+    };
+
+    const rawPayload =
+      cause.event === "subscription.halted"
+        ? {
+            entity: "event",
+            account_id: merchant2.razorpayAccountId,
+            event: "subscription.halted",
+            contains: ["subscription"],
+            payload: { subscription: { entity: subscriptionEntity } },
+          }
+        : {
+            entity: "event",
+            account_id: merchant2.razorpayAccountId,
+            event: "subscription.charged.failed",
+            contains: ["payment", "subscription"],
+            payload: {
+              payment: {
+                entity: {
+                  id: generateRazorpayPaymentId(),
+                  entity: "payment",
+                  amount: amountPaise,
+                  currency: "INR",
+                  status: "failed",
+                  method: "card",
+                  email: customer.email,
+                  contact: customer.phone,
+                  error_code: cause.errorCode,
+                  error_description: cause.errorDescription,
+                  created_at: Math.floor(occurredAt.getTime() / 1000),
+                },
+              },
+              subscription: { entity: subscriptionEntity },
+            },
+          };
+
+    const event = await prisma.recoveryEvent.create({
+      data: {
+        merchantId: merchant2.id,
+        customerId: customer.id,
+        scenario: Scenario.SUBSCRIPTION_FAILURE,
+        sourceType: "synthetic",
+        rawPayload,
+        amountPaise,
+        currency: "INR",
+        occurredAt,
+      },
+    });
+
+    subscriptionEvents.push({
+      id: event.id,
+      merchantId: event.merchantId,
+      customerId: customer.id,
+      amountPaise,
+    });
+   }
+  }
+
+  console.log(
+    `  Created ${subscriptionEvents.length} RecoveryEvent records (all SUBSCRIPTION_FAILURE, merchant: ${merchant2.name}).`,
+  );
+
+  for (const event of subscriptionEvents) {
+    const caseRecord = await prisma.case.create({
+      data: {
+        recoveryEventId: event.id,
+        merchantId: event.merchantId,
+        customerId: event.customerId,
+        state: CaseState.DETECTED,
+        attemptCount: 0,
+        maxAttempts: 3,
+      },
+    });
+
+    await prisma.caseTransition.create({
+      data: {
+        caseId: caseRecord.id,
+        fromState: null,
+        toState: CaseState.DETECTED,
+        actor: Actor.SYSTEM,
+        reasonCode: "event_ingested",
+      },
+    });
+  }
+
+  console.log(`  Created ${subscriptionEvents.length} Case records (all DETECTED) with initial transitions.`);
+
+  // -------------------------------------------------------------------------
+  // 3c/4c. RecoveryEvents + Cases — overdue B2B invoices for merchant #3
+  // (Phase 9). ~7 tier-1 (1-3 days overdue), ~7 tier-2 (4-10 days), ~6
+  // tier-3 (11+ days) — see getEscalationTier() in lib/orchestrator/orchestrator.ts.
+  // Two Cases get a promisedPaymentDate set (one already past, to show
+  // escalation resuming; one in the future, to show it paused) — see
+  // lib/orchestrator/orchestrator.ts's promise-to-pay guardrail.
+  // -------------------------------------------------------------------------
+  interface InvoiceTierSpec {
+    tier: 1 | 2 | 3;
+    count: number;
+    minDaysOverdue: number;
+    maxDaysOverdue: number;
+  }
+
+  const INVOICE_TIERS: InvoiceTierSpec[] = [
+    { tier: 1, count: 7, minDaysOverdue: 1, maxDaysOverdue: 3 },
+    { tier: 2, count: 7, minDaysOverdue: 4, maxDaysOverdue: 10 },
+    { tier: 3, count: 6, minDaysOverdue: 11, maxDaysOverdue: 25 },
+  ];
+
+  const merchant3 = merchants[2];
+  const m3Customers = customersByMerchant[merchant3.id];
+
+  interface InvoiceEventRecord extends EventRecord {
+    tier: 1 | 2 | 3;
+  }
+
+  const invoiceEvents: InvoiceEventRecord[] = [];
+  let invoiceSeq = 1;
+
+  for (const tierSpec of INVOICE_TIERS) {
+    for (let i = 0; i < tierSpec.count; i++) {
+      const customer = pick(m3Customers);
+      const daysOverdue = randInt(tierSpec.minDaysOverdue, tierSpec.maxDaysOverdue);
+      const dueDate = daysAgoDate(daysOverdue);
+      const amountPaise = randInt(50000, 8000000); // ₹500 to ₹80,000 (B2B invoice)
+      const invoiceId = generateRazorpayId("inv");
+      const invoiceNumber = `INV-2026-${String(invoiceSeq).padStart(4, "0")}`;
+      invoiceSeq++;
+
+      const rawPayload = {
+        entity: "event",
+        account_id: merchant3.razorpayAccountId,
+        // Production would ingest these via Razorpay's Invoice webhooks
+        // (`invoice.expired` et al.); the buildathon simulates them
+        // directly via seed data instead, per the Phase 9 build notes.
+        event: "invoice.expired",
+        contains: ["invoice"],
+        payload: {
+          invoice: {
+            entity: {
+              id: invoiceId,
+              entity: "invoice",
+              invoice_number: invoiceNumber,
+              amount: amountPaise,
+              currency: "INR",
+              status: "expired",
+              due_by: Math.floor(dueDate.getTime() / 1000),
+              customer_details: {
+                customer_name: customer.name,
+                email: customer.email,
+                contact: customer.phone,
+              },
+              created_at: Math.floor(dueDate.getTime() / 1000) - 30 * 24 * 60 * 60,
+            },
+          },
+        },
+      };
+
+      const event = await prisma.recoveryEvent.create({
+        data: {
+          merchantId: merchant3.id,
+          customerId: customer.id,
+          scenario: Scenario.INVOICE_OVERDUE,
+          sourceType: "synthetic",
+          rawPayload,
+          amountPaise,
+          currency: "INR",
+          occurredAt: dueDate,
+          dueDate,
+        },
+      });
+
+      invoiceEvents.push({
+        id: event.id,
+        merchantId: event.merchantId,
+        customerId: customer.id,
+        amountPaise,
+        tier: tierSpec.tier,
+      });
+    }
+  }
+
+  console.log(
+    `  Created ${invoiceEvents.length} RecoveryEvent records (all INVOICE_OVERDUE, merchant: ${merchant3.name}).`,
+  );
+
+  // Pick one tier-1 case for a future promise (pauses escalation) and one
+  // tier-2 case for a past/expired promise (escalation should resume).
+  const futurePromiseIndex = invoiceEvents.findIndex((e) => e.tier === 1);
+  const pastPromiseIndex = invoiceEvents.findIndex((e) => e.tier === 2);
+
+  for (let i = 0; i < invoiceEvents.length; i++) {
+    const event = invoiceEvents[i];
+    let promisedPaymentDate: Date | null = null;
+    if (i === futurePromiseIndex) {
+      promisedPaymentDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days from now
+    } else if (i === pastPromiseIndex) {
+      promisedPaymentDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago (expired)
+    }
+
+    const caseRecord = await prisma.case.create({
+      data: {
+        recoveryEventId: event.id,
+        merchantId: event.merchantId,
+        customerId: event.customerId,
+        state: CaseState.DETECTED,
+        attemptCount: 0,
+        maxAttempts: 2,
+        promisedPaymentDate,
+      },
+    });
+
+    await prisma.caseTransition.create({
+      data: {
+        caseId: caseRecord.id,
+        fromState: null,
+        toState: CaseState.DETECTED,
+        actor: Actor.SYSTEM,
+        reasonCode: "event_ingested",
+      },
+    });
+
+    if (promisedPaymentDate) {
+      await prisma.caseTransition.create({
+        data: {
+          caseId: caseRecord.id,
+          fromState: CaseState.DETECTED,
+          toState: CaseState.DETECTED,
+          actor: Actor.HUMAN,
+          reasonCode: "promise_to_pay_logged",
+          metadata: { promisedPaymentDate: promisedPaymentDate.toISOString(), seeded: true },
+        },
+      });
+    }
+  }
+
+  console.log(
+    `  Created ${invoiceEvents.length} Case records (all DETECTED) with initial transitions ` +
+      `(2 with promisedPaymentDate — one future, one past).`,
+  );
+
+  // -------------------------------------------------------------------------
   // 5. RecoveryPolicy — starter set for checkout drop-off causes
   // -------------------------------------------------------------------------
   const policies = [
@@ -538,6 +887,60 @@ async function main() {
       cooldownMinutes: 2880,
       maxAttempts: 1,
     },
+
+    // --- Subscription Failure (Phase 9) -----------------------------------
+    {
+      scenario: Scenario.SUBSCRIPTION_FAILURE,
+      causeCode: "MANDATE_INSUFFICIENT_FUNDS",
+      allowedActions: ["RETRY_LINK", "REMINDER"],
+      cooldownMinutes: 2880, // 2 days — recurring charges are less urgent
+      maxAttempts: 3,
+    },
+    {
+      scenario: Scenario.SUBSCRIPTION_FAILURE,
+      causeCode: "MANDATE_LAPSED",
+      // Re-authorization, NOT a blind retry — retrying a lapsed mandate
+      // just fails again the same way.
+      allowedActions: ["RE_AUTH_LINK"],
+      cooldownMinutes: 2880,
+      maxAttempts: 2,
+    },
+    {
+      scenario: Scenario.SUBSCRIPTION_FAILURE,
+      causeCode: "MANDATE_EXPIRED_CARD",
+      allowedActions: ["UPDATE_PAYMENT_METHOD"],
+      cooldownMinutes: 2880,
+      maxAttempts: 2,
+    },
+
+    // --- B2B Invoice Overdue (Phase 9) — graduated escalation -------------
+    // Three rows share (scenario, causeCode) and are disambiguated by
+    // escalationTier — see the doc comment on RecoveryPolicy in
+    // prisma/schema.prisma and getEscalationTier() in orchestrator.ts.
+    {
+      scenario: Scenario.INVOICE_OVERDUE,
+      causeCode: "INVOICE_OVERDUE",
+      escalationTier: 1, // 1-3 days overdue
+      allowedActions: ["FRIENDLY_NUDGE"],
+      cooldownMinutes: 1440,
+      maxAttempts: 2,
+    },
+    {
+      scenario: Scenario.INVOICE_OVERDUE,
+      causeCode: "INVOICE_OVERDUE",
+      escalationTier: 2, // 4-10 days overdue
+      allowedActions: ["FIRM_REMINDER"],
+      cooldownMinutes: 2880,
+      maxAttempts: 2,
+    },
+    {
+      scenario: Scenario.INVOICE_OVERDUE,
+      causeCode: "INVOICE_OVERDUE",
+      escalationTier: 3, // 11+ days overdue — straight to a human
+      allowedActions: ["ESCALATE_TO_HUMAN"],
+      cooldownMinutes: 0,
+      maxAttempts: 1,
+    },
   ];
 
   for (const p of policies) {
@@ -553,6 +956,33 @@ async function main() {
   console.log(`  Created ${policies.length} RecoveryPolicy records.`);
 
   // -------------------------------------------------------------------------
+  // 6. Users — one per role for demo/testing. Password is "recover123"
+  //    for all three; change immediately in any real environment via
+  //    `npm run create:admin`.
+  // -------------------------------------------------------------------------
+  const demoPassword = "recover123";
+  const passwordHash = await bcrypt.hash(demoPassword, 12);
+
+  const demoUsers = [
+    { email: "admin@recover.local", role: UserRole.ADMIN },
+    { email: "reviewer@recover.local", role: UserRole.REVIEWER },
+    { email: "viewer@recover.local", role: UserRole.VIEWER },
+  ];
+
+  for (const u of demoUsers) {
+    await prisma.user.create({
+      data: { email: u.email, passwordHash, role: u.role },
+    });
+  }
+
+  console.log(
+    `  Created ${demoUsers.length} demo Users (password: "${demoPassword}"):`,
+  );
+  for (const u of demoUsers) {
+    console.log(`    • ${u.email.padEnd(28)} ${u.role}`);
+  }
+
+  // -------------------------------------------------------------------------
   // Summary
   // -------------------------------------------------------------------------
   console.log("\n━━━ Seed Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -562,24 +992,45 @@ async function main() {
     console.log(`    • ${m.name} — ${custCount} customers`);
   }
   console.log(`  Customers:  ${totalCustomers} total`);
-  console.log(`  Events:     ${events.length} (all CHECKOUT_DROPOFF, merchant: ${merchant1.name})`);
-  console.log(`  Cases:      ${events.length} (all DETECTED)`);
+  console.log(
+    `  Events:     ${events.length} CHECKOUT_DROPOFF (${merchant1.name}) + ` +
+      `${subscriptionEvents.length} SUBSCRIPTION_FAILURE (${merchant2.name}) + ` +
+      `${invoiceEvents.length} INVOICE_OVERDUE (${merchant3.name}) = ` +
+      `${events.length + subscriptionEvents.length + invoiceEvents.length} total`,
+  );
+  console.log(
+    `  Cases:      ${events.length + subscriptionEvents.length + invoiceEvents.length} (all DETECTED)`,
+  );
 
-  console.log("\n  Cause code distribution:");
+  console.log("\n  Checkout Drop-off cause code distribution:");
   for (const [cause, count] of Object.entries(causeCounts).sort(
     (a, b) => b[1] - a[1],
   )) {
     const pct = ((count / EVENT_COUNT) * 100).toFixed(1);
-    console.log(`    ${cause.padEnd(20)} ${String(count).padStart(3)} (${pct}%)`);
+    console.log(`    ${cause.padEnd(28)} ${String(count).padStart(3)} (${pct}%)`);
   }
 
-  console.log(`\n  Total amount at risk: ${formatPaiseAsRupees(totalAmountPaise)}`);
-  console.log(
-    `\n  Note: ${MERCHANTS[1].name} and ${MERCHANTS[2].name} have customers`,
-  );
-  console.log(
-    "  seeded but no events yet — Phase 9 will add subscription and invoice events.\n",
-  );
+  console.log("\n  Subscription Failure cause code distribution:");
+  for (const [cause, count] of Object.entries(subscriptionCauseCounts).sort(
+    (a, b) => b[1] - a[1],
+  )) {
+    const pct = ((count / SUBSCRIPTION_EVENT_COUNT) * 100).toFixed(1);
+    console.log(`    ${cause.padEnd(28)} ${String(count).padStart(3)} (${pct}%)`);
+  }
+
+  console.log("\n  Invoice Overdue escalation tier distribution:");
+  for (const tierSpec of INVOICE_TIERS) {
+    const count = invoiceEvents.filter((e) => e.tier === tierSpec.tier).length;
+    console.log(
+      `    Tier ${tierSpec.tier} (${tierSpec.minDaysOverdue}-${tierSpec.maxDaysOverdue}d overdue)  ${String(count).padStart(3)}`,
+    );
+  }
+
+  const totalAtRisk =
+    totalAmountPaise +
+    subscriptionEvents.reduce((sum, e) => sum + e.amountPaise, 0) +
+    invoiceEvents.reduce((sum, e) => sum + e.amountPaise, 0);
+  console.log(`\n  Total amount at risk (all scenarios): ${formatPaiseAsRupees(totalAtRisk)}\n`);
 }
 
 main()

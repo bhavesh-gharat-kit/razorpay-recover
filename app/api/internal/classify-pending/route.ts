@@ -4,7 +4,7 @@
  * Finds all Case rows still in DETECTED state with no ClassifiedCase yet,
  * runs classifyRecoveryEvent on each, and returns a summary.
  *
- * Protected by INTERNAL_TASK_SECRET header check (real auth in Phase 7).
+ * Gated to ADMIN sessions (Phase 7).
  *
  * Phase 4's worker will call classifyRecoveryEvent() directly (imported,
  * not via HTTP) on every tick. This endpoint exists for manual triggering
@@ -15,20 +15,12 @@ import { NextRequest } from "next/server";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { prisma } from "@/lib/db";
 import { classifyRecoveryEvent } from "@/lib/classification/classify";
-import { CaseState } from "@prisma/client";
+import { CaseState, UserRole } from "@prisma/client";
+import { requireRole } from "@/lib/auth/requireRole";
 
 export async function POST(request: NextRequest) {
-  // Verify internal task secret.
-  const secret = process.env.INTERNAL_TASK_SECRET ?? "";
-  const provided = request.headers.get("x-internal-secret") ?? "";
-
-  if (!secret || provided !== secret) {
-    return errorResponse(
-      "UNAUTHORIZED",
-      "Invalid or missing internal secret",
-      401,
-    );
-  }
+  const auth = await requireRole(request, [UserRole.ADMIN]);
+  if (auth.response) return auth.response;
 
   try {
     // Find all DETECTED cases without a ClassifiedCase

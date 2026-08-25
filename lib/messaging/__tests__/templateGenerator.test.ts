@@ -8,6 +8,9 @@ const CAUSE_CODES = [
   "CARD_EXPIRED",
   "GATEWAY_TIMEOUT",
   "OTP_ABANDONED",
+  "MANDATE_INSUFFICIENT_FUNDS",
+  "MANDATE_LAPSED",
+  "MANDATE_EXPIRED_CARD",
 ] as const;
 const CHANNELS = ["EMAIL", "SMS"] as const;
 const LANGUAGES = ["EN", "HINGLISH"] as const;
@@ -67,6 +70,78 @@ describe("attempt-aware copy", () => {
     const first = renderTemplateMessage(baseInput({ attemptNumber: 1 }));
     const retry = renderTemplateMessage(baseInput({ attemptNumber: 2 }));
     expect(retry.body).not.toBe(first.body);
+  });
+});
+
+describe("MANDATE_LAPSED — must ask for re-authorization, never a blind retry", () => {
+  it("never says 'try again' and does mention re-authorization", () => {
+    const input = baseInput({
+      causeCode: "MANDATE_LAPSED",
+      scenario: "SUBSCRIPTION_FAILURE",
+    });
+    const result = renderTemplateMessage(input);
+    const combined = `${result.subject ?? ""} ${result.body}`.toLowerCase();
+
+    expect(combined).toMatch(/re-?authoriz/);
+    expect(combined).not.toMatch(/try again/);
+  });
+});
+
+describe("INVOICE_OVERDUE — graduated escalation templates", () => {
+  const TIERS = ["FRIENDLY_NUDGE", "FIRM_REMINDER"] as const;
+
+  for (const action of TIERS) {
+    for (const channel of CHANNELS) {
+      for (const language of LANGUAGES) {
+        it(`${action}/${channel}/${language} is well-formed and cites real invoice facts`, () => {
+          const input = baseInput({
+            causeCode: "INVOICE_OVERDUE",
+            scenario: "INVOICE_OVERDUE",
+            channel,
+            language,
+            action,
+            invoiceNumber: "INV-2026-0042",
+            daysOverdue: 7,
+            dueDateLabel: "12 Aug 2026",
+          });
+          const result = renderTemplateMessage(input);
+
+          expect(result.body).toContain("INV-2026-0042");
+          expect(result.body).toContain(formatAmountINR(input.amountPaise, input.currency));
+          expect(result.body).toContain(input.recoveryLink);
+          expect(result.body).not.toMatch(/\{\{.*\}\}/);
+          if (channel === "SMS") {
+            expect(result.body.length).toBeLessThan(300);
+          }
+        });
+      }
+    }
+  }
+
+  it("FIRM_REMINDER names the actual days-overdue count, FRIENDLY_NUDGE stays low-pressure", () => {
+    const firm = renderTemplateMessage(
+      baseInput({
+        causeCode: "INVOICE_OVERDUE",
+        scenario: "INVOICE_OVERDUE",
+        action: "FIRM_REMINDER",
+        invoiceNumber: "INV-2026-0007",
+        daysOverdue: 9,
+        dueDateLabel: "1 Aug 2026",
+      }),
+    );
+    expect(firm.body).toContain("9");
+
+    const nudge = renderTemplateMessage(
+      baseInput({
+        causeCode: "INVOICE_OVERDUE",
+        scenario: "INVOICE_OVERDUE",
+        action: "FRIENDLY_NUDGE",
+        invoiceNumber: "INV-2026-0007",
+        daysOverdue: 2,
+        dueDateLabel: "20 Aug 2026",
+      }),
+    );
+    expect(nudge.body).not.toBe(firm.body);
   });
 });
 

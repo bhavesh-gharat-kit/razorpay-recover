@@ -9,10 +9,11 @@
  */
 
 import { prisma } from "@/lib/db";
-import { Actor, CaseState, ClassificationSource } from "@prisma/client";
-import { classifyByRules, extractSignals } from "./rules";
+import { Actor, CaseState, ClassificationSource, Scenario } from "@prisma/client";
+import { classifyByRules, classifyInvoiceOverdue, extractSignals } from "./rules";
 import { classifyByEmbedding, CONFIDENCE_THRESHOLD } from "./embeddings";
 import type { CauseCode } from "./rules";
+import { emitCaseTransition } from "@/lib/events/emit";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,21 +59,30 @@ export async function classifyRecoveryEvent(
   let confidence: number;
   let source: ClassificationSource;
 
-  const ruleResult = classifyByRules(event.rawPayload);
-
-  if (ruleResult) {
-    causeCode = ruleResult.causeCode;
-    confidence = ruleResult.confidence;
+  if (event.scenario === Scenario.INVOICE_OVERDUE) {
+    // Rules-only path (Phase 9) — the cause is just "is dueDate in the
+    // past?", so there's no free text to fall back to embeddings for.
+    const invoiceResult = classifyInvoiceOverdue(event.dueDate);
+    causeCode = invoiceResult.causeCode;
+    confidence = invoiceResult.confidence;
     source = ClassificationSource.RULE;
   } else {
-    // 3. Fall back to embedding similarity
-    const signals = extractSignals(event.rawPayload);
-    const freeText = signals?.errorDescription ?? "";
+    const ruleResult = classifyByRules(event.rawPayload);
 
-    const embeddingResult = await classifyByEmbedding(freeText);
-    causeCode = embeddingResult.causeCode as CauseCode;
-    confidence = embeddingResult.confidence;
-    source = ClassificationSource.EMBEDDING;
+    if (ruleResult) {
+      causeCode = ruleResult.causeCode;
+      confidence = ruleResult.confidence;
+      source = ClassificationSource.RULE;
+    } else {
+      // 3. Fall back to embedding similarity
+      const signals = extractSignals(event.rawPayload);
+      const freeText = signals?.errorDescription ?? "";
+
+      const embeddingResult = await classifyByEmbedding(freeText);
+      causeCode = embeddingResult.causeCode as CauseCode;
+      confidence = embeddingResult.confidence;
+      source = ClassificationSource.EMBEDDING;
+    }
   }
 
   // 4. Determine whether this is a confident classification
@@ -122,6 +132,13 @@ export async function classifyRecoveryEvent(
             confidence,
           },
         },
+      });
+
+      await emitCaseTransition(tx, {
+        caseId: caseRecord.id,
+        fromState: caseRecord.state,
+        toState: CaseState.DIAGNOSED,
+        causeCode,
       });
     } else {
       // Below threshold — stay at DETECTED, record explicitly

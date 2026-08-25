@@ -20,6 +20,7 @@ import { createPaymentLink } from "@/lib/razorpay/client";
 import { getMessageGenerator } from "@/lib/messaging";
 import type { MessageGenerationInput } from "@/lib/messaging/types";
 import { getChannelAdapter } from "@/lib/channels";
+import { emitCaseTransition } from "@/lib/events/emit";
 import {
   Actor,
   CaseState,
@@ -28,10 +29,11 @@ import {
   GeneratedBy,
   JobStatus,
   Language,
+  Scenario,
   type Case,
   type DraftMessage,
-  type Scenario,
 } from "@prisma/client";
+import { extractInvoiceNumber } from "@/lib/classification/rules";
 
 /** Case shape carrying the relations `sendDraftAndTransition` needs. */
 type CaseWithSendRelations = Case & {
@@ -111,6 +113,36 @@ export function computeRunAt(
 }
 
 // ---------------------------------------------------------------------------
+// Graduated escalation (Phase 9) — INVOICE_OVERDUE only
+// ---------------------------------------------------------------------------
+
+/**
+ * Days between `dueDate` and now, floored (0 = due today or in the
+ * future). Returns null when there's no due date to compute from.
+ */
+export function getDaysOverdue(
+  dueDate: Date | null,
+  now: Date = new Date(),
+): number | null {
+  if (!dueDate) return null;
+  const diffMs = now.getTime() - dueDate.getTime();
+  return Math.max(0, Math.floor(diffMs / (24 * 60 * 60 * 1000)));
+}
+
+/**
+ * Maps daysOverdue to the escalation tier used to look up the matching
+ * RecoveryPolicy row (see the `escalationTier` doc comment on the model):
+ *   Tier 1 — 1-3 days overdue  -> FRIENDLY_NUDGE
+ *   Tier 2 — 4-10 days overdue -> FIRM_REMINDER
+ *   Tier 3 — 11+ days overdue  -> ESCALATE_TO_HUMAN
+ */
+export function getEscalationTier(daysOverdue: number): 1 | 2 | 3 {
+  if (daysOverdue <= 3) return 1;
+  if (daysOverdue <= 10) return 2;
+  return 3;
+}
+
+// ---------------------------------------------------------------------------
 // decideNextAction — the core guardrail + scheduling function
 // ---------------------------------------------------------------------------
 
@@ -139,9 +171,60 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
     return { action: "skipped", reason: "no_classified_case" };
   }
 
-  // --- Guardrail: Human approval check (pre-wired for Phase 7) ---
+  // --- Guardrail: Human approval check (Phase 7) ---
+  // Latest transition rules the day: if a human has already resolved this
+  // case (approve/reject/reclassify), the orchestrator should not gate on
+  // an older `pending_human_approval` transition again.
   const latestTransition = caseRecord.transitions[0];
   if (latestTransition?.reasonCode === "pending_human_approval") {
+    return { action: "skipped", reason: "pending_human_approval" };
+  }
+
+  // --- Guardrail: Amount-over-threshold intercept (Phase 7) ---
+  // Big-ticket cases don't get auto-sent; they wait for a human. Once a
+  // reviewer approves (writes `human_approved`), the check above passes
+  // because `latestTransition` becomes the approval, not the intercept.
+  // Any historical `human_approved` transition means a reviewer already
+  // green-lit this case — don't re-intercept on subsequent decideNextAction
+  // ticks. Query directly rather than relying on the truncated `take: 5`
+  // above so an approval that scrolled off is still respected.
+  const alreadyApproved = (await prisma.caseTransition.count({
+    where: { caseId, reasonCode: "human_approved" },
+  })) > 0;
+  if (
+    !alreadyApproved &&
+    caseRecord.recoveryEvent.amountPaise >=
+      env.HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE
+  ) {
+    await prisma.$transaction(async (tx) => {
+      await tx.caseTransition.create({
+        data: {
+          caseId,
+          fromState: CaseState.DIAGNOSED,
+          toState: CaseState.DIAGNOSED,
+          actor: Actor.SYSTEM,
+          reasonCode: "pending_human_approval",
+          metadata: {
+            amountPaise: caseRecord.recoveryEvent.amountPaise,
+            threshold: env.HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE,
+            trigger: "amount_over_threshold",
+          },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          entityType: "Case",
+          entityId: caseId,
+          actor: Actor.SYSTEM,
+          action: "pending_human_approval",
+          reasonCode: "amount_over_threshold",
+          afterState: {
+            amountPaise: caseRecord.recoveryEvent.amountPaise,
+            threshold: env.HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE,
+          },
+        },
+      });
+    });
     return { action: "skipped", reason: "pending_human_approval" };
   }
 
@@ -154,16 +237,28 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
   }
 
   // --- Guardrail: Policy lookup ---
+  // INVOICE_OVERDUE resolves to one of three tiered policy rows sharing the
+  // same (scenario, causeCode) — see getDaysOverdue/getEscalationTier
+  // above and the `escalationTier` doc comment on RecoveryPolicy. Every
+  // other scenario stores its policy with escalationTier: null, and the
+  // case-side value below is also null for them, so this filter is a
+  // no-op there — same lookup shape as before Phase 9.
+  const escalationTier =
+    caseRecord.recoveryEvent.scenario === Scenario.INVOICE_OVERDUE
+      ? getEscalationTier(getDaysOverdue(caseRecord.recoveryEvent.dueDate) ?? 0)
+      : null;
+
   const policy = await prisma.recoveryPolicy.findFirst({
     where: {
       scenario: caseRecord.recoveryEvent.scenario,
       causeCode,
       active: true,
+      escalationTier,
     },
   });
 
   if (!policy) {
-    await escalateCase(caseRecord, "no_policy_configured");
+    await escalateCase(caseRecord, "no_policy_configured", causeCode);
     return { action: "escalated", reason: "no_policy_configured" };
   }
 
@@ -173,7 +268,7 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
     policy.maxAttempts,
   );
   if (caseRecord.attemptCount >= effectiveMaxAttempts) {
-    await escalateCase(caseRecord, "max_attempts_exhausted");
+    await escalateCase(caseRecord, "max_attempts_exhausted", causeCode);
     return { action: "escalated", reason: "max_attempts_exhausted" };
   }
 
@@ -238,11 +333,28 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
   // attempt number, customer preference, channel availability, etc.)
   const action = allowedActions[0] ?? "RETRY_LINK";
 
+  // --- Tier 3 invoice escalation short-circuits straight to a human ---
+  // ESCALATE_TO_HUMAN never drafts or sends a message — it exists purely
+  // to move the case into the approval queue for an account manager.
+  if (action === "ESCALATE_TO_HUMAN") {
+    await escalateCase(caseRecord, "invoice_tier3_escalation", causeCode);
+    return { action: "escalated", reason: "invoice_tier3_escalation" };
+  }
+
   let recoveryLinkId: string | null = null;
   let recoveryLinkUrl: string | null = null;
   let isPlaceholder = false;
 
-  if (action === "RETRY_LINK" || action === "REMINDER") {
+  {
+    // Every remaining action needs a link as its message's call-to-action.
+    // RE_AUTH_LINK (lapsed mandate) and UPDATE_PAYMENT_METHOD (expired
+    // mandate card) reuse the same Payment Link creation call as
+    // RETRY_LINK/REMINDER/FRIENDLY_NUDGE/FIRM_REMINDER — Razorpay doesn't
+    // expose a dedicated "re-authorize this mandate" or "update this
+    // card" API, so for this buildathon a Payment Link (whose template
+    // copy explains the real ask — see templateGenerator.ts) stands in
+    // for both. A real pilot would swap this for Razorpay's Subscription
+    // update-payment-method flow once available.
     const linkResult = await createPaymentLink({
       amountPaise: caseRecord.recoveryEvent.amountPaise,
       currency: caseRecord.recoveryEvent.currency,
@@ -356,6 +468,13 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
         },
       },
     });
+
+    await emitCaseTransition(tx, {
+      caseId,
+      fromState: CaseState.DIAGNOSED,
+      toState: CaseState.ACTION_SCHEDULED,
+      causeCode,
+    });
   });
 
   return {
@@ -428,6 +547,29 @@ export async function executeScheduledAction(
   const channel: MessageGenerationInput["channel"] = "EMAIL";
   const language: MessageGenerationInput["language"] = "EN";
 
+  // INVOICE_OVERDUE-only facts (Phase 9) — the graduated-escalation
+  // templates (FRIENDLY_NUDGE / FIRM_REMINDER) name the actual invoice
+  // number and days overdue, never a placeholder. `action` also
+  // disambiguates which tier's copy to render, since the causeCode alone
+  // ("INVOICE_OVERDUE") is the same at every tier — see the composite
+  // registry key in templateGenerator.ts.
+  const isInvoice = caseRecord.recoveryEvent.scenario === Scenario.INVOICE_OVERDUE;
+  const invoiceNumber = isInvoice
+    ? (extractInvoiceNumber(caseRecord.recoveryEvent.rawPayload) ??
+        `INV-${caseId.slice(-8).toUpperCase()}`)
+    : undefined;
+  const daysOverdue = isInvoice
+    ? (getDaysOverdue(caseRecord.recoveryEvent.dueDate) ?? 0)
+    : undefined;
+  const dueDateLabel =
+    isInvoice && caseRecord.recoveryEvent.dueDate
+      ? caseRecord.recoveryEvent.dueDate.toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        })
+      : undefined;
+
   const generationInput: MessageGenerationInput = {
     caseId,
     causeCode,
@@ -440,6 +582,10 @@ export async function executeScheduledAction(
     currency: caseRecord.recoveryEvent.currency,
     recoveryLink: linkUrl,
     attemptNumber: caseRecord.attemptCount + 1,
+    action,
+    invoiceNumber,
+    daysOverdue,
+    dueDateLabel,
   };
 
   const result = await getMessageGenerator().generate(generationInput);
@@ -596,6 +742,13 @@ async function sendDraftAndTransition(
           },
         },
       });
+
+      await emitCaseTransition(tx, {
+        caseId: caseRecord.id,
+        fromState: CaseState.ACTION_SCHEDULED,
+        toState: CaseState.ACTION_SENT,
+        causeCode: caseRecord.classifiedCase?.causeCode ?? null,
+      });
     });
     return;
   }
@@ -657,7 +810,11 @@ async function sendDraftAndTransition(
     return;
   }
 
-  await escalateCase(caseRecord, "delivery_failed_max_attempts");
+  await escalateCase(
+    caseRecord,
+    "delivery_failed_max_attempts",
+    caseRecord.classifiedCase?.causeCode ?? null,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +824,7 @@ async function sendDraftAndTransition(
 async function escalateCase(
   caseRecord: Case,
   reasonCode: string,
+  causeCode: string | null = null,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.case.update({
@@ -694,6 +852,13 @@ async function escalateCase(
         beforeState: { state: caseRecord.state },
         afterState: { state: CaseState.ESCALATED },
       },
+    });
+
+    await emitCaseTransition(tx, {
+      caseId: caseRecord.id,
+      fromState: caseRecord.state,
+      toState: CaseState.ESCALATED,
+      causeCode,
     });
   });
 }

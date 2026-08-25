@@ -23,6 +23,7 @@ import {
   executeScheduledAction,
 } from "../lib/orchestrator/orchestrator";
 import type { ScheduledActionPayload } from "../lib/orchestrator/orchestrator";
+import { emitBatchSummary } from "../lib/events/emit";
 
 // Worker gets its own PrismaClient — it doesn't share the Next.js singleton
 // because it runs as a separate OS process.
@@ -226,6 +227,7 @@ async function runPipeline(): Promise<PipelineResult> {
 
 export async function tick(): Promise<void> {
   const tickStart = Date.now();
+  const tickStartedAt = new Date(tickStart);
 
   // First tick: recover stale jobs.
   if (isFirstTick) {
@@ -280,6 +282,25 @@ export async function tick(): Promise<void> {
     );
   }
   console.log(`[worker] tick (${elapsed}ms) — ${parts.join(" | ")}`);
+
+  // Emit a batch_summary SystemEvent so the dashboard's SSE stream can show
+  // live numbers for this tick. "recovered" is counted separately (rather
+  // than threaded through the pipeline) because auto-recovery happens via
+  // the payment_link.paid webhook, a path outside this tick's five steps.
+  const recoveredThisTick = await prisma.case.count({
+    where: { state: CaseState.RECOVERED, updatedAt: { gte: tickStartedAt } },
+  });
+  try {
+    await emitBatchSummary(prisma, {
+      processed: jobsProcessed,
+      classified: pipeline?.classified ?? 0,
+      scheduled: pipeline?.decided ?? 0,
+      sent: jobsSucceeded,
+      recovered: recoveredThisTick,
+    });
+  } catch (err) {
+    console.error("[worker] Failed to emit batch_summary event:", err);
+  }
 }
 
 // ---------------------------------------------------------------------------

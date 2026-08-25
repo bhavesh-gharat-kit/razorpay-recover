@@ -38,6 +38,9 @@ const mockPrisma = {
   auditLog: {
     create: vi.fn(),
   },
+  systemEvent: {
+    create: vi.fn(),
+  },
   $transaction: vi.fn((fn: (tx: typeof mockPrisma) => Promise<unknown>) =>
     fn(mockPrisma),
   ),
@@ -383,6 +386,147 @@ describe("executeScheduledAction — send + transition on delivery outcome", () 
       }),
     );
     expect(mockPrisma.scheduledJob.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("Graduated escalation — getDaysOverdue / getEscalationTier (Phase 9)", () => {
+  it("computes daysOverdue floored at 0, and null with no dueDate", async () => {
+    const { getDaysOverdue } = await import("./orchestrator");
+
+    const now = new Date("2026-08-20T00:00:00Z");
+    expect(getDaysOverdue(new Date("2026-08-15T00:00:00Z"), now)).toBe(5);
+    expect(getDaysOverdue(new Date("2026-08-25T00:00:00Z"), now)).toBe(0); // future due date
+    expect(getDaysOverdue(null, now)).toBeNull();
+  });
+
+  it("maps daysOverdue to the correct tier boundaries", async () => {
+    const { getEscalationTier } = await import("./orchestrator");
+
+    expect(getEscalationTier(1)).toBe(1);
+    expect(getEscalationTier(3)).toBe(1);
+    expect(getEscalationTier(4)).toBe(2);
+    expect(getEscalationTier(10)).toBe(2);
+    expect(getEscalationTier(11)).toBe(3);
+    expect(getEscalationTier(100)).toBe(3);
+  });
+});
+
+describe("Graduated escalation — policy lookup + action routing (Phase 9)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.caseTransition.count.mockResolvedValue(0);
+  });
+
+  function makeInvoiceCase(daysOverdue: number, overrides: Record<string, unknown> = {}) {
+    const dueDate = new Date(Date.now() - daysOverdue * 24 * 60 * 60 * 1000);
+    return makeCase({
+      classifiedCase: { causeCode: "INVOICE_OVERDUE" },
+      recoveryEvent: {
+        scenario: "INVOICE_OVERDUE",
+        amountPaise: 500000,
+        currency: "INR",
+        dueDate,
+      },
+      ...overrides,
+    });
+  }
+
+  it("looks up the tier-1 policy (escalationTier: 1) for a 2-day-overdue invoice case", async () => {
+    const { decideNextAction } = await import("./orchestrator");
+
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(makeInvoiceCase(2));
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(
+      makePolicy({ scenario: "INVOICE_OVERDUE", causeCode: "INVOICE_OVERDUE", allowedActions: ["FRIENDLY_NUDGE"], escalationTier: 1 }),
+    );
+
+    await decideNextAction("case_test");
+
+    expect(mockPrisma.recoveryPolicy.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ causeCode: "INVOICE_OVERDUE", escalationTier: 1 }),
+      }),
+    );
+  });
+
+  it("looks up the tier-2 policy for a 7-day-overdue invoice case", async () => {
+    const { decideNextAction } = await import("./orchestrator");
+
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(makeInvoiceCase(7));
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(
+      makePolicy({ scenario: "INVOICE_OVERDUE", causeCode: "INVOICE_OVERDUE", allowedActions: ["FIRM_REMINDER"], escalationTier: 2 }),
+    );
+
+    await decideNextAction("case_test");
+
+    expect(mockPrisma.recoveryPolicy.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ causeCode: "INVOICE_OVERDUE", escalationTier: 2 }),
+      }),
+    );
+  });
+
+  it("tier-3 (11+ days overdue) escalates straight to a human, never drafts a message", async () => {
+    const { decideNextAction } = await import("./orchestrator");
+
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(makeInvoiceCase(15));
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(
+      makePolicy({
+        scenario: "INVOICE_OVERDUE",
+        causeCode: "INVOICE_OVERDUE",
+        allowedActions: ["ESCALATE_TO_HUMAN"],
+        escalationTier: 3,
+        maxAttempts: 1,
+      }),
+    );
+
+    const result = await decideNextAction("case_test");
+
+    expect(result.action).toBe("escalated");
+    expect(mockPrisma.case.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { state: CaseState.ESCALATED } }),
+    );
+    // No Payment Link / ScheduledJob for a straight-to-human escalation.
+    expect(mockPrisma.scheduledJob.create).not.toHaveBeenCalled();
+  });
+
+  it("a non-invoice case looks up its policy with escalationTier: null (unchanged Phase 4-8 behavior)", async () => {
+    const { decideNextAction } = await import("./orchestrator");
+
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(makeCase());
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(makePolicy());
+
+    await decideNextAction("case_test");
+
+    expect(mockPrisma.recoveryPolicy.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ escalationTier: null }),
+      }),
+    );
+  });
+
+  it("MANDATE_LAPSED (subscription) schedules a RE_AUTH_LINK action with a real Payment Link, never a blind retry", async () => {
+    const { decideNextAction } = await import("./orchestrator");
+
+    mockPrisma.case.findUniqueOrThrow.mockResolvedValue(
+      makeCase({
+        classifiedCase: { causeCode: "MANDATE_LAPSED" },
+        recoveryEvent: { scenario: "SUBSCRIPTION_FAILURE", amountPaise: 99900, currency: "INR" },
+      }),
+    );
+    mockPrisma.recoveryPolicy.findFirst.mockResolvedValue(
+      makePolicy({ scenario: "SUBSCRIPTION_FAILURE", causeCode: "MANDATE_LAPSED", allowedActions: ["RE_AUTH_LINK"] }),
+    );
+
+    const result = await decideNextAction("case_test");
+
+    expect(result.action).toBe("scheduled");
+    expect(mockPrisma.scheduledJob.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({ action: "RE_AUTH_LINK" }),
+        }),
+      }),
+    );
   });
 });
 

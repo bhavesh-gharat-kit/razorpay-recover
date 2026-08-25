@@ -71,6 +71,14 @@ export const env = {
     10,
   ),
 
+  // Human review threshold (Phase 7). Cases with amount at or above this
+  // (in paise) require human approval before the orchestrator auto-sends.
+  // Default: ₹5,000 = 500000 paise.
+  HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE: parseInt(
+    optional("HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE", "500000"),
+    10,
+  ),
+
   // Callback URL for Razorpay Payment Links — defaults to the app's own
   // webhook endpoint. Override in production with the public domain.
   RECOVERY_CALLBACK_URL: optional(

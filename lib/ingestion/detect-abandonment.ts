@@ -18,6 +18,7 @@ import {
   Actor,
   OrderTrackingStatus,
 } from "@prisma/client";
+import { emitCaseTransition } from "@/lib/events/emit";
 
 export interface AbandonmentResult {
   /** Total CREATED orders past the grace window. */
@@ -158,6 +159,13 @@ export async function detectAbandonedCheckouts(): Promise<AbandonmentResult> {
       await tx.orderTracking.update({
         where: { id: order.id },
         data: { status: OrderTrackingStatus.FAILED },
+      });
+
+      await emitCaseTransition(tx, {
+        caseId: caseRecord.id,
+        fromState: null,
+        toState: CaseState.DETECTED,
+        causeCode: null,
       });
     });
 

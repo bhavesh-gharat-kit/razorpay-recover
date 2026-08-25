@@ -15,8 +15,22 @@ import type { CauseCode } from "./rules";
 // Exemplar set — labeled phrases per cause code
 // ---------------------------------------------------------------------------
 
+/**
+ * The embedding fallback only ever fires for CHECKOUT_DROPOFF's ambiguous
+ * free-text descriptions (see classify.ts) — SUBSCRIPTION_FAILURE's cause
+ * codes are always resolved deterministically by rules.ts, and
+ * INVOICE_OVERDUE is a rules-only path with no free text at all. So this
+ * exemplar set intentionally stays scoped to the four checkout causes
+ * rather than widening to every CauseCode.
+ */
+type EmbeddingCauseCode =
+  | "INSUFFICIENT_FUNDS"
+  | "CARD_EXPIRED"
+  | "GATEWAY_TIMEOUT"
+  | "OTP_ABANDONED";
+
 /** Each cause code maps to 5-8 example phrases in English and Hinglish. */
-export const EXEMPLARS: Record<Exclude<CauseCode, "UNCLASSIFIED">, string[]> = {
+export const EXEMPLARS: Record<EmbeddingCauseCode, string[]> = {
   INSUFFICIENT_FUNDS: [
     "the customer's account did not have enough balance",
     "payment declined due to low funds",
@@ -88,7 +102,7 @@ type Pipeline = {
 };
 
 let pipelineInstance: Pipeline | null = null;
-let exemplarEmbeddings: { causeCode: Exclude<CauseCode, "UNCLASSIFIED">; embedding: Float32Array }[] | null = null;
+let exemplarEmbeddings: { causeCode: EmbeddingCauseCode; embedding: Float32Array }[] | null = null;
 
 /**
  * Lazily initialize the feature-extraction pipeline and precompute
@@ -96,7 +110,7 @@ let exemplarEmbeddings: { causeCode: Exclude<CauseCode, "UNCLASSIFIED">; embeddi
  */
 async function getOrInitPipeline(): Promise<{
   pipe: Pipeline;
-  exemplars: { causeCode: Exclude<CauseCode, "UNCLASSIFIED">; embedding: Float32Array }[];
+  exemplars: { causeCode: EmbeddingCauseCode; embedding: Float32Array }[];
 }> {
   if (pipelineInstance && exemplarEmbeddings) {
     return { pipe: pipelineInstance, exemplars: exemplarEmbeddings };
@@ -115,10 +129,10 @@ async function getOrInitPipeline(): Promise<{
   pipelineInstance = pipe;
 
   // Precompute exemplar embeddings
-  const entries: { causeCode: Exclude<CauseCode, "UNCLASSIFIED">; embedding: Float32Array }[] = [];
+  const entries: { causeCode: EmbeddingCauseCode; embedding: Float32Array }[] = [];
 
   for (const [code, phrases] of Object.entries(EXEMPLARS) as [
-    Exclude<CauseCode, "UNCLASSIFIED">,
+    EmbeddingCauseCode,
     string[],
   ][]) {
     for (const phrase of phrases) {
