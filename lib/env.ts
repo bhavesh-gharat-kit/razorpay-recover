@@ -58,6 +58,14 @@ export const env = {
   // (scripts/test-send-email.ts). Empty in CI / production.
   TEST_RECIPIENT_EMAIL: optional("TEST_RECIPIENT_EMAIL", ""),
 
+  // Structured logger (lib/logger.ts, Phase 10). Defaults to "info" in
+  // production, "debug" in development if unset.
+  LOG_LEVEL: optional("LOG_LEVEL", ""),
+
+  // Sentry error monitoring (Phase 10). Optional — if empty, Sentry.init
+  // is never called and the app runs identically without an account.
+  SENTRY_DSN: optional("SENTRY_DSN", ""),
+
   // Checkout abandonment detection — minutes to wait before treating
   // an order as abandoned (default 30).
   CHECKOUT_ABANDONMENT_GRACE_MINUTES: parseInt(

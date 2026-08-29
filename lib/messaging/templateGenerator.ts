@@ -22,6 +22,7 @@
  */
 
 import { formatAmountINR } from "./formatAmount";
+import { logger } from "@/lib/logger";
 import type {
   MessageGenerationInput,
   MessageGenerationResult,
@@ -635,10 +636,14 @@ export function renderTemplateMessage(
   if (templateFn) {
     output = templateFn(input, amount);
   } else {
-    console.warn(
-      `[messaging] No template for causeCode=${input.causeCode} ` +
-        `(registryKey=${registryKey}) channel=${input.channel} language=${input.language} — ` +
-        `using fallback template. Consider adding dedicated copy for this combination.`,
+    logger.warn(
+      {
+        causeCode: input.causeCode,
+        registryKey,
+        channel: input.channel,
+        language: input.language,
+      },
+      "no template for this combination — using fallback template",
     );
     output = fallbackTemplate(input, amount);
   }

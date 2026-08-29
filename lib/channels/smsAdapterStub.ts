@@ -9,6 +9,7 @@
  * point SMS/WHATSAPP at the new adapter; the interface doesn't change).
  */
 
+import { logger } from "@/lib/logger";
 import type { ChannelAdapter, SendInput, SendResult } from "./types";
 
 const BODY_PREVIEW_LENGTH = 60;
@@ -20,8 +21,9 @@ export const smsAdapterStub: ChannelAdapter = {
         ? `${input.body.slice(0, BODY_PREVIEW_LENGTH)}…`
         : input.body;
 
-    console.log(
-      `[smsAdapterStub] Would send ${input.channel} to ${input.to.phone ?? "unknown"}: "${preview}"`,
+    logger.info(
+      { channel: input.channel, to: input.to.phone ?? "unknown", preview },
+      "smsAdapterStub: would send",
     );
 
     return {

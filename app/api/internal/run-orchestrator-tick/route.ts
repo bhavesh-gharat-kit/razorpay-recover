@@ -8,7 +8,9 @@
  */
 
 import { NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { successResponse, errorResponse } from "@/lib/api/response";
+import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/db";
 import { classifyRecoveryEvent } from "@/lib/classification/classify";
 import { detectAbandonedCheckouts } from "@/lib/ingestion/detect-abandonment";
@@ -100,7 +102,8 @@ export async function POST(request: NextRequest) {
       const abandonment = await detectAbandonedCheckouts();
       results.abandonmentDetected = abandonment.createdCount;
     } catch (err) {
-      console.error("[orchestrator-tick] Abandonment error:", err);
+      logger.error({ err }, "orchestrator-tick: abandonment detection failed");
+      Sentry.captureException(err);
     }
 
     const pendingCases = await prisma.case.findMany({
@@ -113,7 +116,8 @@ export async function POST(request: NextRequest) {
         const r = await classifyRecoveryEvent(c.recoveryEventId);
         if (r.transitioned) results.classified++;
       } catch (err) {
-        console.error(`[orchestrator-tick] Classify error ${c.id}:`, err);
+        logger.error({ err, caseId: c.id }, "orchestrator-tick: classify failed");
+        Sentry.captureException(err);
       }
     }
 
@@ -134,7 +138,8 @@ export async function POST(request: NextRequest) {
         else if (r.action === "skipped") results.skipped++;
         else if (r.action === "escalated") results.escalated++;
       } catch (err) {
-        console.error(`[orchestrator-tick] Decide error ${c.id}:`, err);
+        logger.error({ err, caseId: c.id }, "orchestrator-tick: decide failed");
+        Sentry.captureException(err);
       }
     }
 
@@ -153,7 +158,8 @@ export async function POST(request: NextRequest) {
 
     return successResponse(results);
   } catch (error) {
-    console.error("[orchestrator-tick] Error:", error);
+    logger.error({ err: error }, "orchestrator-tick failed");
+    Sentry.captureException(error);
     return errorResponse(
       "ORCHESTRATOR_TICK_ERROR",
       "Failed to run orchestrator tick",

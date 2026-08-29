@@ -11,10 +11,12 @@
  */
 
 import { NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { verifyRazorpaySignature } from "@/lib/ingestion/verify-signature";
 import { eventHandlers } from "@/lib/ingestion/handlers";
 import { prisma } from "@/lib/db";
+import { logger } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET ?? "";
@@ -29,8 +31,9 @@ export async function POST(request: NextRequest) {
       request.headers.get("x-forwarded-for") ??
       request.headers.get("x-real-ip") ??
       "unknown";
-    console.error(
-      `[webhook] Signature verification failed — source IP: ${sourceIp}`,
+    logger.error(
+      { sourceIp },
+      "webhook signature verification failed",
     );
     return errorResponse("INVALID_SIGNATURE", "Signature verification failed", 401);
   }
@@ -90,7 +93,8 @@ export async function POST(request: NextRequest) {
     );
     return successResponse({ eventType, eventId, ...result });
   } catch (error) {
-    console.error(`[webhook] Handler error for ${eventType}:`, error);
+    logger.error({ err: error, eventType }, "webhook handler failed");
+    Sentry.captureException(error);
     return errorResponse(
       "HANDLER_ERROR",
       `Failed to process ${eventType} event`,

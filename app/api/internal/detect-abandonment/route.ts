@@ -11,9 +11,11 @@
  */
 
 import { NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { detectAbandonedCheckouts } from "@/lib/ingestion/detect-abandonment";
 import { requireRole } from "@/lib/auth/requireRole";
+import { logger } from "@/lib/logger";
 import { UserRole } from "@prisma/client";
 
 export async function GET(request: NextRequest) {
@@ -24,7 +26,8 @@ export async function GET(request: NextRequest) {
     const result = await detectAbandonedCheckouts();
     return successResponse(result);
   } catch (error) {
-    console.error("[detect-abandonment] Error:", error);
+    logger.error({ err: error }, "detect-abandonment failed");
+    Sentry.captureException(error);
     return errorResponse(
       "DETECTION_ERROR",
       "Failed to run abandonment detection",

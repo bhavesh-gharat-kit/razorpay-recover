@@ -14,6 +14,7 @@
  * No Redis, no BullMQ — the DB is the queue.
  */
 
+import * as Sentry from "@sentry/node";
 import cron from "node-cron";
 import { PrismaClient, CaseState, JobStatus } from "@prisma/client";
 import { classifyRecoveryEvent } from "../lib/classification/classify";
@@ -24,6 +25,20 @@ import {
 } from "../lib/orchestrator/orchestrator";
 import type { ScheduledActionPayload } from "../lib/orchestrator/orchestrator";
 import { emitBatchSummary } from "../lib/events/emit";
+import { logger } from "../lib/logger";
+
+// The worker is a standalone OS process (not part of the Next.js app), so
+// it doesn't get Sentry init "for free" via instrumentation.ts — it has to
+// call Sentry.init itself, once, at startup. If SENTRY_DSN isn't set this
+// is simply skipped and every Sentry.captureException call below becomes a
+// no-op — the worker runs identically either way.
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV ?? "development",
+    tracesSampleRate: 1.0,
+  });
+}
 
 // Worker gets its own PrismaClient — it doesn't share the Next.js singleton
 // because it runs as a separate OS process.
@@ -122,7 +137,8 @@ async function executeJob(job: ClaimedJob): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[worker] Job ${job.id} (${job.jobType}) failed:`, message);
+    logger.error({ jobId: job.id, jobType: job.jobType, err: message }, "job failed");
+    Sentry.captureException(err);
 
     await prisma.scheduledJob.update({
       where: { id: job.id },
@@ -163,7 +179,8 @@ async function runPipeline(): Promise<PipelineResult> {
     const abandonment = await detectAbandonedCheckouts();
     result.abandonmentDetected = abandonment.createdCount;
   } catch (err) {
-    console.error("[worker] Abandonment detection error:", err);
+    logger.error({ err }, "worker: abandonment detection error");
+    Sentry.captureException(err);
   }
 
   // Step 2: Classify DETECTED cases.
@@ -180,7 +197,8 @@ async function runPipeline(): Promise<PipelineResult> {
       const classResult = await classifyRecoveryEvent(c.recoveryEventId);
       if (classResult.transitioned) result.classified++;
     } catch (err) {
-      console.error(`[worker] Classification error for case ${c.id}:`, err);
+      logger.error({ err, caseId: c.id }, "worker: classification error");
+      Sentry.captureException(err);
       result.classifyErrors++;
     }
   }
@@ -214,7 +232,8 @@ async function runPipeline(): Promise<PipelineResult> {
           break;
       }
     } catch (err) {
-      console.error(`[worker] decideNextAction error for case ${c.id}:`, err);
+      logger.error({ err, caseId: c.id }, "worker: decideNextAction error");
+      Sentry.captureException(err);
     }
   }
 
@@ -229,77 +248,102 @@ export async function tick(): Promise<void> {
   const tickStart = Date.now();
   const tickStartedAt = new Date(tickStart);
 
-  // First tick: recover stale jobs.
-  if (isFirstTick) {
-    const recovered = await recoverStaleJobs();
-    if (recovered > 0) {
-      console.log(`[worker] Recovered ${recovered} stale job(s) on startup.`);
-    }
-    isFirstTick = false;
-  }
-
-  // Claim and execute due jobs.
-  let jobsProcessed = 0;
-  let jobsSucceeded = 0;
-  let jobsFailed = 0;
-
   try {
-    const claimed = await claimJobs();
-    jobsProcessed = claimed.length;
-
-    for (const job of claimed) {
-      try {
-        await executeJob(job);
-        jobsSucceeded++;
-      } catch {
-        jobsFailed++;
+    // First tick: recover stale jobs.
+    if (isFirstTick) {
+      const recovered = await recoverStaleJobs();
+      if (recovered > 0) {
+        logger.info({ recovered }, "worker: recovered stale job(s) on startup");
       }
+      isFirstTick = false;
+    }
+
+    // Claim and execute due jobs.
+    let jobsProcessed = 0;
+    let jobsSucceeded = 0;
+    let jobsFailed = 0;
+
+    try {
+      const claimed = await claimJobs();
+      jobsProcessed = claimed.length;
+
+      for (const job of claimed) {
+        try {
+          await executeJob(job);
+          jobsSucceeded++;
+        } catch {
+          jobsFailed++;
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "worker: job claiming error");
+      Sentry.captureException(err);
+    }
+
+    // Run the detect → classify → decide pipeline.
+    let pipeline: PipelineResult | null = null;
+    try {
+      pipeline = await runPipeline();
+    } catch (err) {
+      logger.error({ err }, "worker: pipeline error");
+      Sentry.captureException(err);
+    }
+
+    // Tick summary.
+    const elapsed = Date.now() - tickStart;
+    logger.info(
+      {
+        elapsedMs: elapsed,
+        jobsProcessed,
+        jobsSucceeded,
+        jobsFailed,
+        ...(pipeline
+          ? {
+              abandonmentDetected: pipeline.abandonmentDetected,
+              classified: pipeline.classified,
+              scheduled: pipeline.decided,
+              skipped: pipeline.decideSkipped,
+              escalated: pipeline.decideEscalated,
+            }
+          : {}),
+      },
+      "worker tick complete",
+    );
+
+    // Emit a batch_summary SystemEvent so the dashboard's SSE stream can show
+    // live numbers for this tick. "recovered" is counted separately (rather
+    // than threaded through the pipeline) because auto-recovery happens via
+    // the payment_link.paid webhook, a path outside this tick's five steps.
+    const recoveredThisTick = await prisma.case.count({
+      where: { state: CaseState.RECOVERED, updatedAt: { gte: tickStartedAt } },
+    });
+    try {
+      await emitBatchSummary(prisma, {
+        processed: jobsProcessed,
+        classified: pipeline?.classified ?? 0,
+        scheduled: pipeline?.decided ?? 0,
+        sent: jobsSucceeded,
+        recovered: recoveredThisTick,
+      });
+    } catch (err) {
+      logger.error({ err }, "worker: failed to emit batch_summary event");
+      Sentry.captureException(err);
     }
   } catch (err) {
-    console.error("[worker] Job claiming error:", err);
-  }
-
-  // Run the detect → classify → decide pipeline.
-  let pipeline: PipelineResult | null = null;
-  try {
-    pipeline = await runPipeline();
-  } catch (err) {
-    console.error("[worker] Pipeline error:", err);
-  }
-
-  // Tick summary.
-  const elapsed = Date.now() - tickStart;
-  const parts = [
-    `jobs: ${jobsProcessed} claimed, ${jobsSucceeded} ok, ${jobsFailed} failed`,
-  ];
-  if (pipeline) {
-    parts.push(
-      `pipeline: ${pipeline.abandonmentDetected} abandoned, ` +
-        `${pipeline.classified} classified, ` +
-        `${pipeline.decided} scheduled, ` +
-        `${pipeline.decideSkipped} skipped, ` +
-        `${pipeline.decideEscalated} escalated`,
-    );
-  }
-  console.log(`[worker] tick (${elapsed}ms) — ${parts.join(" | ")}`);
-
-  // Emit a batch_summary SystemEvent so the dashboard's SSE stream can show
-  // live numbers for this tick. "recovered" is counted separately (rather
-  // than threaded through the pipeline) because auto-recovery happens via
-  // the payment_link.paid webhook, a path outside this tick's five steps.
-  const recoveredThisTick = await prisma.case.count({
-    where: { state: CaseState.RECOVERED, updatedAt: { gte: tickStartedAt } },
-  });
-  try {
-    await emitBatchSummary(prisma, {
-      processed: jobsProcessed,
-      classified: pipeline?.classified ?? 0,
-      scheduled: pipeline?.decided ?? 0,
-      sent: jobsSucceeded,
-      recovered: recoveredThisTick,
+    // Defense in depth: every step above already catches its own errors,
+    // so reaching here means something structural broke the tick as a
+    // whole (e.g. the DB connection dropped entirely). Sentry.withScope
+    // tags the event as a whole-tick failure — distinct from the
+    // per-job/per-case captures above — so it's easy to spot in the
+    // Sentry dashboard, then the error is rethrown so the caller's
+    // `.catch()` below still logs and the cron loop survives to retry
+    // next minute.
+    Sentry.withScope((scope) => {
+      scope.setTag("worker.failure", "fatal_tick");
+      scope.setContext("tick", { tickStartedAt: tickStartedAt.toISOString() });
+      Sentry.captureException(err);
     });
-  } catch (err) {
-    console.error("[worker] Failed to emit batch_summary event:", err);
+    throw err;
   }
 }
 
@@ -307,15 +351,15 @@ export async function tick(): Promise<void> {
 // Cron loop — every 60 seconds
 // ---------------------------------------------------------------------------
 
-console.log("[worker] Starting cron loop (every 60s)...");
+logger.info("worker: starting cron loop (every 60s)");
 
 // Run one tick immediately on startup.
 tick().catch((err) => {
-  console.error("[worker] Initial tick error:", err);
+  logger.error({ err }, "worker: initial tick error");
 });
 
 cron.schedule("* * * * *", () => {
   tick().catch((err) => {
-    console.error("[worker] Tick error:", err);
+    logger.error({ err }, "worker: tick error");
   });
 });

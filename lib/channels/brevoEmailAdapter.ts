@@ -18,6 +18,7 @@
  */
 
 import { env } from "@/lib/env";
+import { logger } from "@/lib/logger";
 import type { ChannelAdapter, SendInput, SendResult } from "./types";
 
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
@@ -58,10 +59,9 @@ function recordSentEmail(): void {
   dailyCounter.count += 1;
 
   if (dailyCounter.count >= DAILY_WARNING_THRESHOLD) {
-    console.warn(
-      `[brevoEmailAdapter] ${dailyCounter.count} emails sent today (UTC) — ` +
-        "approaching Brevo's free-tier limit of 300/day. Emails will start " +
-        "failing once the limit is hit.",
+    logger.warn(
+      { sentToday: dailyCounter.count },
+      "approaching Brevo's free-tier limit of 300/day",
     );
   }
 }
@@ -211,9 +211,9 @@ function wait(ms: number): Promise<void> {
 export const brevoEmailAdapter: ChannelAdapter = {
   async send(input: SendInput): Promise<SendResult> {
     if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
-      console.error(
-        "[brevoEmailAdapter] BREVO_API_KEY / BREVO_SENDER_EMAIL not " +
-          "configured — cannot send email.",
+      logger.error(
+        {},
+        "BREVO_API_KEY / BREVO_SENDER_EMAIL not configured — cannot send email",
       );
       return {
         status: "FAILED",
@@ -228,10 +228,9 @@ export const brevoEmailAdapter: ChannelAdapter = {
     let outcome = await attemptSend(input);
 
     if (outcome.kind === "server_error") {
-      console.warn(
-        "[brevoEmailAdapter] Brevo returned a server error, retrying once " +
-          `after ${RETRY_DELAY_MS}ms:`,
-        outcome.message,
+      logger.warn(
+        { retryDelayMs: RETRY_DELAY_MS, message: outcome.message },
+        "Brevo returned a server error, retrying once",
       );
       await wait(RETRY_DELAY_MS);
       outcome = await attemptSend(input);

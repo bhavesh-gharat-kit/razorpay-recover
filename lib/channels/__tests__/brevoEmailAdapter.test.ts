@@ -154,7 +154,12 @@ describe("brevoEmailAdapter", () => {
     vi.spyOn(global, "fetch").mockImplementation(async () =>
       jsonResponse(201, { messageId: "brevo-msg-x" }),
     );
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // `vi.resetModules()` in `beforeEach` means a dynamic `import("../brevoEmailAdapter")`
+    // resolves `@/lib/logger` against a fresh module registry — so the spy has
+    // to be set on that same fresh `logger` instance, not the one imported
+    // statically at the top of this file.
+    const { logger: freshLogger } = await import("@/lib/logger");
+    const warnSpy = vi.spyOn(freshLogger, "warn").mockImplementation(() => undefined as never);
 
     const { brevoEmailAdapter, setDailyWarningThresholdForTests } =
       await import("../brevoEmailAdapter");
@@ -167,6 +172,7 @@ describe("brevoEmailAdapter", () => {
 
     await brevoEmailAdapter.send(baseInput); // 3rd send crosses the threshold
     expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sentToday: 3 }),
       expect.stringContaining("approaching Brevo's free-tier limit"),
     );
   });

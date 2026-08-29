@@ -14,6 +14,7 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth/requireRole";
+import { logger } from "@/lib/logger";
 import { UserRole } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -68,7 +69,10 @@ export async function GET(request: NextRequest) {
             controller.enqueue(encoder.encode(`: ping\n\n`));
           }
         } catch (err) {
-          console.error("[sse] poll error:", err);
+          // Not sent to Sentry — this loop polls every 2s per open
+          // connection, so a transient DB blip would burn through the
+          // free-tier error quota fast. The next poll retries on its own.
+          logger.error({ err }, "sse poll error");
         }
       };
 

@@ -12,11 +12,13 @@
  */
 
 import { NextRequest } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { prisma } from "@/lib/db";
 import { classifyRecoveryEvent } from "@/lib/classification/classify";
 import { CaseState, UserRole } from "@prisma/client";
 import { requireRole } from "@/lib/auth/requireRole";
+import { logger } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   const auth = await requireRole(request, [UserRole.ADMIN]);
@@ -61,7 +63,8 @@ export async function POST(request: NextRequest) {
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
-    console.error("[classify-pending] Error:", error);
+    logger.error({ err: error }, "classify-pending failed");
+    Sentry.captureException(error);
     return errorResponse(
       "CLASSIFICATION_ERROR",
       "Failed to run classification",

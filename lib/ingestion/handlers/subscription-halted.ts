@@ -18,6 +18,7 @@
  */
 
 import { prisma } from "@/lib/db";
+import { logger } from "@/lib/logger";
 import { Scenario, CaseState, Actor } from "@prisma/client";
 import type { HandlerResult } from "./types";
 
@@ -65,9 +66,9 @@ export async function handleSubscriptionHalted(
 
   const amountPaise = priorEvent?.amountPaise ?? 0;
   if (!priorEvent) {
-    console.warn(
-      `[ingestion] subscription.halted for ${subscriptionEntity.id} had no prior ` +
-        "SUBSCRIPTION_FAILURE RecoveryEvent to source an amount from — using 0.",
+    logger.warn(
+      { subscriptionId: subscriptionEntity.id },
+      "subscription.halted had no prior SUBSCRIPTION_FAILURE RecoveryEvent to source an amount from — using 0",
     );
   }
 

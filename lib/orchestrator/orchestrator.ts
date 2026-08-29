@@ -16,6 +16,7 @@
 
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
+import { logger } from "@/lib/logger";
 import { createPaymentLink } from "@/lib/razorpay/client";
 import { getMessageGenerator } from "@/lib/messaging";
 import type { MessageGenerationInput } from "@/lib/messaging/types";
@@ -368,9 +369,9 @@ export async function decideNextAction(caseId: string): Promise<DecideResult> {
 
     if (!linkResult.ok) {
       // Payment Link creation failed — log and skip, retry next tick.
-      console.error(
-        `[orchestrator] Payment Link creation failed for case ${caseId}:`,
-        linkResult.error,
+      logger.error(
+        { caseId, err: linkResult.error },
+        "orchestrator: payment link creation failed",
       );
       await prisma.caseTransition.create({
         data: {
@@ -511,9 +512,9 @@ export async function executeScheduledAction(
 
   // Guard: only act on ACTION_SCHEDULED cases.
   if (caseRecord.state !== CaseState.ACTION_SCHEDULED) {
-    console.warn(
-      `[orchestrator] executeScheduledAction called for case ${caseId} in ` +
-        `state ${caseRecord.state} — expected ACTION_SCHEDULED, skipping.`,
+    logger.warn(
+      { caseId, state: caseRecord.state },
+      "orchestrator: executeScheduledAction called outside ACTION_SCHEDULED, skipping",
     );
     return;
   }
@@ -521,9 +522,9 @@ export async function executeScheduledAction(
   const linkUrl = caseRecord.recoveryLinkUrl ?? recoveryLinkUrl;
   if (!linkUrl) {
     // Guardrail: never draft a message with no recovery link to send.
-    console.error(
-      `[orchestrator] No recovery link available for case ${caseId} — ` +
-        "skipping draft generation.",
+    logger.error(
+      { caseId },
+      "orchestrator: no recovery link available — skipping draft generation",
     );
     await prisma.caseTransition.create({
       data: {

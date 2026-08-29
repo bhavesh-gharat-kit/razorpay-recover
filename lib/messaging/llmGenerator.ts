@@ -13,6 +13,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { env } from "@/lib/env";
+import { logger } from "@/lib/logger";
 import { formatAmountINR } from "./formatAmount";
 import { renderTemplateMessage } from "./templateGenerator";
 import type {
@@ -186,9 +187,9 @@ export const llmGenerator: MessageGenerator = {
       };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[messaging] LLM drafting failed for case ${input.caseId} — ` +
-          `falling back to template generator. Reason: ${reason}`,
+      logger.warn(
+        { caseId: input.caseId, reason },
+        "LLM drafting failed — falling back to template generator",
       );
       return renderTemplateMessage(input);
     }

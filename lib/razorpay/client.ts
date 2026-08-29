@@ -8,6 +8,7 @@
  */
 
 import { env } from "@/lib/env";
+import { logger } from "@/lib/logger";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,10 +79,9 @@ export async function createPaymentLink(
   params: CreatePaymentLinkParams,
 ): Promise<RazorpayResult<PaymentLinkResult>> {
   if (!isConfigured()) {
-    console.warn(
-      "[razorpay] RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not configured — " +
-        "returning placeholder link for case",
-      params.referenceId,
+    logger.warn(
+      { referenceId: params.referenceId },
+      "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not configured — returning placeholder link",
     );
     return {
       ok: true,
@@ -119,9 +119,9 @@ export async function createPaymentLink(
 
     if (!res.ok) {
       const errBody = await res.text();
-      console.error(
-        `[razorpay] createPaymentLink failed (${res.status}):`,
-        errBody,
+      logger.error(
+        { status: res.status, errBody },
+        "razorpay createPaymentLink failed",
       );
       return {
         ok: false,
@@ -139,7 +139,7 @@ export async function createPaymentLink(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[razorpay] createPaymentLink exception:", message);
+    logger.error({ err: message }, "razorpay createPaymentLink exception");
     return { ok: false, error: message };
   }
 }
@@ -183,7 +183,7 @@ export async function fetchPaymentLinkStatus(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[razorpay] fetchPaymentLinkStatus exception:", message);
+    logger.error({ err: message }, "razorpay fetchPaymentLinkStatus exception");
     return { ok: false, error: message };
   }
 }
