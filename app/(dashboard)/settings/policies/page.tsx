@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { RecoveryPolicy } from "@prisma/client";
 import { apiFetch, ApiRequestError } from "@/lib/api/client";
 import { useCurrentUser } from "@/lib/hooks/useCurrentUser";
+import { Toast } from "@/components/Toast";
 
 type EditableFields = Pick<
   RecoveryPolicy,
@@ -17,6 +18,7 @@ export default function PoliciesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -80,9 +82,12 @@ export default function PoliciesPage() {
         method: "PATCH",
         body: JSON.stringify(drafts[p.id]),
       });
+      setToast({ message: "Policy saved successfully.", type: "success" });
       await load();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Failed to save policy");
+      const msg = err instanceof ApiRequestError ? err.message : "Failed to save policy";
+      setError(msg);
+      setToast({ message: msg, type: "error" });
     } finally {
       setSavingId(null);
     }
@@ -222,6 +227,8 @@ export default function PoliciesPage() {
           </tbody>
         </table>
       </div>
+
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { ApprovalQueueItem, ApprovalReason } from "@/lib/approval/queue";
+import type { Scenario } from "@prisma/client";
 import { CAUSE_CODES } from "@/lib/classification/rules";
 import { apiFetch, ApiRequestError } from "@/lib/api/client";
 import { formatAmountINR } from "@/lib/messaging/formatAmount";
 import { relativeTime } from "@/lib/format/relativeTime";
 import { useCurrentUser } from "@/lib/hooks/useCurrentUser";
 import { useEventStream } from "@/lib/hooks/useEventStream";
+import { Toast } from "@/components/Toast";
 
 const REASON_LABEL: Record<ApprovalReason, string> = {
   below_threshold: "Below confidence threshold",
@@ -16,10 +18,31 @@ const REASON_LABEL: Record<ApprovalReason, string> = {
   escalated: "Escalated",
 };
 
+const SCENARIO_OPTIONS: { value: Scenario; label: string }[] = [
+  { value: "CHECKOUT_DROPOFF", label: "Checkout Drop-off" },
+  { value: "SUBSCRIPTION_FAILURE", label: "Subscription Failure" },
+  { value: "INVOICE_OVERDUE", label: "Invoice Overdue" },
+];
+
+const SORT_OPTIONS: { value: string; label: string }[] = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amount_desc", label: "Amount (high → low)" },
+  { value: "amount_asc", label: "Amount (low → high)" },
+];
+
 interface DraftForEdit {
   id: string;
   body: string;
   subject: string | null;
+}
+
+interface ApprovalsResponse {
+  count: number;
+  items: ApprovalQueueItem[];
+  page: number;
+  limit: number;
+  totalPages: number;
 }
 
 export default function ApprovalsPage() {
@@ -27,38 +50,66 @@ export default function ApprovalsPage() {
   const canAct = user?.role === "ADMIN" || user?.role === "REVIEWER";
 
   const [items, setItems] = useState<ApprovalQueueItem[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Filters & pagination
+  const [page, setPage] = useState(1);
+  const [scenarioFilter, setScenarioFilter] = useState("");
+  const [reasonFilter, setReasonFilter] = useState("");
+  const [sort, setSort] = useState("newest");
+
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const [editingCaseId, setEditingCaseId] = useState<string | null>(null);
   const [reclassifyCaseId, setReclassifyCaseId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const data = await apiFetch<{ items: ApprovalQueueItem[] }>("/api/approvals");
+      const params = new URLSearchParams({ page: String(page), limit: "25", sort });
+      if (scenarioFilter) params.set("scenario", scenarioFilter);
+      if (reasonFilter) params.set("reason", reasonFilter);
+      const data = await apiFetch<ApprovalsResponse>(`/api/approvals?${params.toString()}`);
       setItems(data.items);
+      setTotalCount(data.count);
+      setTotalPages(data.totalPages);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Failed to load approval queue");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, scenarioFilter, reasonFilter, sort]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  useEventStream(() => load());
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEventStream(() => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(load, 500);
+  });
+
+  const ACTION_TOAST: Record<string, string> = {
+    approve: "Case approved — orchestrator will resume.",
+    reject: "Case rejected and closed.",
+    "mark-recovered": "Case marked as recovered.",
+  };
 
   async function act(caseId: string, name: string, fn: () => Promise<unknown>) {
     setBusy(`${caseId}:${name}`);
     try {
       await fn();
+      setToast({ message: ACTION_TOAST[name] ?? `${name} completed.`, type: "success" });
       await load();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : `${name} failed`);
+      const msg = err instanceof ApiRequestError ? err.message : `${name} failed`;
+      setError(msg);
+      setToast({ message: msg, type: "error" });
     } finally {
       setBusy(null);
     }
@@ -74,6 +125,49 @@ export default function ApprovalsPage() {
         </p>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={scenarioFilter}
+          onChange={(e) => { setScenarioFilter(e.target.value); setPage(1); }}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+        >
+          <option value="">All scenarios</option>
+          {SCENARIO_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <select
+          value={reasonFilter}
+          onChange={(e) => { setReasonFilter(e.target.value); setPage(1); }}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+        >
+          <option value="">All reasons</option>
+          <option value="below_threshold">Below confidence</option>
+          <option value="amount_over_threshold">Amount over threshold</option>
+          <option value="escalated">Escalated</option>
+        </select>
+        <select
+          value={sort}
+          onChange={(e) => { setSort(e.target.value); setPage(1); }}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+        >
+          {SORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        {(scenarioFilter || reasonFilter) && (
+          <button
+            onClick={() => { setScenarioFilter(""); setReasonFilter(""); setPage(1); }}
+            className="text-sm text-slate-500 underline hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          >
+            Clear filters
+          </button>
+        )}
+        <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">
+          {totalCount} item{totalCount !== 1 ? "s" : ""}
+        </span>
+      </div>
+
       {error && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
           {error}
@@ -86,9 +180,9 @@ export default function ApprovalsPage() {
             <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
               <th className="px-3 py-2">Customer</th>
               <th className="px-3 py-2 text-right">Amount</th>
-              <th className="px-3 py-2">Cause</th>
-              <th className="px-3 py-2">Reason</th>
-              <th className="px-3 py-2">In queue</th>
+              <th className="hidden px-3 py-2 md:table-cell">Cause</th>
+              <th className="hidden px-3 py-2 sm:table-cell">Reason</th>
+              <th className="hidden px-3 py-2 sm:table-cell">In queue</th>
               <th className="px-3 py-2">Actions</th>
             </tr>
           </thead>
@@ -120,9 +214,9 @@ export default function ApprovalsPage() {
                   <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">
                     {formatAmountINR(item.amountPaise, item.currency)}
                   </td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{item.causeCode ?? "—"}</td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{REASON_LABEL[item.reason]}</td>
-                  <td className="px-3 py-2 text-slate-400">{relativeTime(item.latestTransitionAt)}</td>
+                  <td className="hidden px-3 py-2 text-slate-600 dark:text-slate-300 md:table-cell">{item.causeCode ?? "—"}</td>
+                  <td className="hidden px-3 py-2 text-slate-600 dark:text-slate-300 sm:table-cell">{REASON_LABEL[item.reason]}</td>
+                  <td className="hidden px-3 py-2 text-slate-400 sm:table-cell">{relativeTime(item.latestTransitionAt)}</td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1.5">
                       <ActionLink
@@ -145,11 +239,13 @@ export default function ApprovalsPage() {
                           )
                         }
                       />
-                      <ActionLink
-                        label="Edit Draft"
-                        disabled={!canAct}
-                        onClick={() => setEditingCaseId(item.caseId)}
-                      />
+                      {item.state !== "DIAGNOSED" && item.state !== "DETECTED" && (
+                        <ActionLink
+                          label="Edit Draft"
+                          disabled={!canAct}
+                          onClick={() => setEditingCaseId(item.caseId)}
+                        />
+                      )}
                       <ActionLink
                         label="Reclassify"
                         disabled={!canAct}
@@ -170,6 +266,28 @@ export default function ApprovalsPage() {
         </table>
       </div>
 
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
+          <span>Page {page} of {totalPages} ({totalCount} total)</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 dark:border-slate-700"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 dark:border-slate-700"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
       {editingCaseId && (
         <EditDraftModal
           caseId={editingCaseId}
@@ -187,10 +305,13 @@ export default function ApprovalsPage() {
           onClose={() => setReclassifyCaseId(null)}
           onSaved={() => {
             setReclassifyCaseId(null);
+            setToast({ message: "Case reclassified.", type: "success" });
             load();
           }}
         />
       )}
+
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

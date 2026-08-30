@@ -202,14 +202,14 @@ export default function CasesPage() {
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
               <th className="px-3 py-2">Customer</th>
-              <th className="px-3 py-2">Merchant</th>
-              <th className="px-3 py-2">Scenario</th>
+              <th className="hidden px-3 py-2 md:table-cell">Merchant</th>
+              <th className="hidden px-3 py-2 sm:table-cell">Scenario</th>
               <th className="px-3 py-2 text-right">Amount</th>
-              <th className="px-3 py-2">Cause</th>
+              <th className="hidden px-3 py-2 lg:table-cell">Cause</th>
               <th className="px-3 py-2">State</th>
-              <th className="px-3 py-2 text-right">Attempts</th>
-              <th className="px-3 py-2">Link</th>
-              <th className="px-3 py-2">Updated</th>
+              <th className="hidden px-3 py-2 text-right md:table-cell">Attempts</th>
+              <th className="hidden px-3 py-2 lg:table-cell">Link</th>
+              <th className="hidden px-3 py-2 sm:table-cell">Updated</th>
             </tr>
           </thead>
           <tbody>
@@ -228,24 +228,24 @@ export default function CasesPage() {
                     <div className="font-medium text-slate-800 dark:text-slate-200">{c.customerName}</div>
                     <div className="text-xs text-slate-400">{c.customerEmail}</div>
                   </td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{c.merchantName}</td>
-                  <td className="px-3 py-2">
+                  <td className="hidden px-3 py-2 text-slate-600 dark:text-slate-300 md:table-cell">{c.merchantName}</td>
+                  <td className="hidden px-3 py-2 sm:table-cell">
                     <ScenarioBadge scenario={c.scenario} />
                   </td>
                   <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">
                     {formatAmountINR(c.amountPaise, c.currency)}
                   </td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{c.causeCode ?? "—"}</td>
+                  <td className="hidden px-3 py-2 text-slate-600 dark:text-slate-300 lg:table-cell">{c.causeCode ?? "—"}</td>
                   <td className="px-3 py-2">
                     <StateBadge state={c.state} />
                   </td>
-                  <td className="px-3 py-2 text-right text-slate-600 dark:text-slate-300">
+                  <td className="hidden px-3 py-2 text-right text-slate-600 dark:text-slate-300 md:table-cell">
                     {c.attemptCount}/{c.maxAttempts}
                   </td>
-                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
+                  <td className="hidden px-3 py-2 text-slate-500 dark:text-slate-400 lg:table-cell">
                     {LINK_STATUS_LABEL[c.recoveryLinkStatus]}
                   </td>
-                  <td className="px-3 py-2 text-slate-400" title={c.updatedAt}>
+                  <td className="hidden px-3 py-2 text-slate-400 sm:table-cell" title={c.updatedAt}>
                     {relativeTime(c.updatedAt)}
                   </td>
                 </tr>

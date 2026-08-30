@@ -91,7 +91,7 @@ describe("describe()", () => {
       fromState: "DIAGNOSED",
       toState: "ESCALATED",
     });
-    expect(text).toContain("DIAGNOSED");
-    expect(text).toContain("ESCALATED");
+    expect(text).toContain("Diagnosed");
+    expect(text).toContain("Escalated");
   });
 });

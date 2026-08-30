@@ -56,6 +56,27 @@ export async function GET(request: NextRequest) {
     filters.reason = reason as ApprovalReason;
   }
 
-  const items = await getApprovalQueue(filters);
-  return successResponse({ count: items.length, items });
+  const allItems = await getApprovalQueue(filters);
+
+  // Pagination
+  const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "25", 10) || 25));
+
+  // Sort: ?sort=amount_asc | amount_desc | newest | oldest
+  const sort = searchParams.get("sort");
+  if (sort === "amount_asc") {
+    allItems.sort((a, b) => a.amountPaise - b.amountPaise);
+  } else if (sort === "amount_desc") {
+    allItems.sort((a, b) => b.amountPaise - a.amountPaise);
+  } else if (sort === "oldest") {
+    allItems.sort((a, b) => a.latestTransitionAt.getTime() - b.latestTransitionAt.getTime());
+  }
+  // default (newest) is already the sort order from getApprovalQueue
+
+  const total = allItems.length;
+  const totalPages = Math.ceil(total / limit);
+  const start = (page - 1) * limit;
+  const items = allItems.slice(start, start + limit);
+
+  return successResponse({ count: total, items, page, limit, totalPages });
 }

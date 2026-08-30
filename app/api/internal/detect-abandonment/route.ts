@@ -18,6 +18,8 @@ import { requireRole } from "@/lib/auth/requireRole";
 import { logger } from "@/lib/logger";
 import { UserRole } from "@prisma/client";
 
+export const maxDuration = 60;
+
 export async function GET(request: NextRequest) {
   const auth = await requireRole(request, [UserRole.ADMIN]);
   if (auth.response) return auth.response;

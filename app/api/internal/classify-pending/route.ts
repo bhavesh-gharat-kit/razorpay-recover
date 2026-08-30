@@ -20,6 +20,8 @@ import { CaseState, UserRole } from "@prisma/client";
 import { requireRole } from "@/lib/auth/requireRole";
 import { logger } from "@/lib/logger";
 
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   const auth = await requireRole(request, [UserRole.ADMIN]);
   if (auth.response) return auth.response;

@@ -11,6 +11,7 @@ import { StateBadge } from "@/components/StateBadge";
 import { ScenarioBadge } from "@/components/ScenarioBadge";
 import { Timeline } from "@/components/Timeline";
 import { useCurrentUser } from "@/lib/hooks/useCurrentUser";
+import { Toast } from "@/components/Toast";
 
 interface CaseDetail {
   id: string;
@@ -105,6 +106,7 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [showRecoverModal, setShowRecoverModal] = useState(false);
   const [showPromiseModal, setShowPromiseModal] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const canAct = user?.role === "ADMIN" || user?.role === "REVIEWER";
 
@@ -128,14 +130,27 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
     load();
   }, [load]);
 
+  const ACTION_TOAST: Record<string, string> = {
+    approve: "Case approved — orchestrator will resume.",
+    reject: "Case rejected and closed.",
+    "mark-recovered": "Case marked as recovered.",
+    retry: "Retry send queued.",
+    "promise-to-pay": "Promise to pay logged.",
+  };
+
   async function runAction(name: string, fn: () => Promise<unknown>) {
     setActionBusy(name);
     setActionError(null);
     try {
       await fn();
+      setToast({ message: ACTION_TOAST[name] ?? `${name} completed.`, type: "success" });
+      // Brief delay so the database state has time to settle before reload
+      await new Promise((r) => setTimeout(r, 500));
       await load();
     } catch (err) {
-      setActionError(err instanceof ApiRequestError ? err.message : `${name} failed`);
+      const msg = err instanceof ApiRequestError ? err.message : `${name} failed`;
+      setActionError(msg);
+      setToast({ message: msg, type: "error" });
     } finally {
       setActionBusy(null);
     }
@@ -405,6 +420,8 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
           }}
         />
       )}
+
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

@@ -24,6 +24,61 @@ export interface TimelineEntry {
   toState: string | null;
 }
 
+/** Human-readable labels for raw CaseTransition reason codes. */
+const TRANSITION_LABELS: Record<string, string> = {
+  classified_INSUFFICIENT_FUNDS: "Classified — Insufficient funds",
+  classified_CARD_DECLINED: "Classified — Card declined",
+  classified_BANK_DOWNTIME: "Classified — Bank downtime",
+  classified_NETWORK_ERROR: "Classified — Network error",
+  classified_UPI_TIMEOUT: "Classified — UPI timeout",
+  classified_AUTHENTICATION_FAILED: "Classified — Authentication failed",
+  classified_USER_CANCELLED: "Classified — User cancelled",
+  classified_MANDATE_INSUFFICIENT_FUNDS: "Classified — Mandate insufficient funds",
+  classified_MANDATE_EXPIRED: "Classified — Mandate expired",
+  classified_MANDATE_CANCELLED: "Classified — Mandate cancelled",
+  classified_INVOICE_OVERDUE: "Classified — Invoice overdue",
+  classified_INVOICE_DISPUTED: "Classified — Invoice disputed",
+  pending_human_approval: "Held for human approval",
+  human_approved: "Approved by reviewer",
+  human_rejected: "Rejected by reviewer",
+  case_rejected: "Rejected — case closed",
+  case_approved: "Approved — orchestrator will resume",
+  case_marked_recovered: "Marked as recovered",
+  action_scheduled: "Recovery action scheduled",
+  message_sent_email: "Message sent via email",
+  message_sent_sms: "Message sent via SMS",
+  message_sent_whatsapp: "Message sent via WhatsApp",
+  message_failed_email: "Email delivery failed",
+  message_failed_sms: "SMS delivery failed",
+  message_failed_whatsapp: "WhatsApp delivery failed",
+  auto_recovered: "Auto-recovered via payment link",
+  case_escalated: "Escalated to human review",
+  draft_created: "Draft message generated",
+  delivery_attempted: "Delivery attempted",
+  payment_link_created: "Payment link created",
+  payment_link_creation_failed: "Payment link creation failed",
+  event_ingested: "Recovery event ingested",
+};
+
+/** Human-readable labels for CaseState enum values. */
+const STATE_LABELS: Record<string, string> = {
+  DETECTED: "Detected",
+  DIAGNOSED: "Diagnosed",
+  ACTION_SCHEDULED: "Action Scheduled",
+  ACTION_SENT: "Action Sent",
+  RECOVERED: "Recovered",
+  ESCALATED: "Escalated",
+  ABANDONED: "Abandoned",
+  CLOSED: "Closed",
+};
+
+/** Human-readable labels for AuditLog action values not handled by
+ * the switch-case in describe(). */
+const ACTION_LABELS: Record<string, string> = {
+  payment_link_created: "Payment link created",
+  payment_link_creation_failed: "Payment link creation failed",
+};
+
 /**
  * Compose a friendly one-liner for an entry. Falls back to the raw
  * action/reasonCode when we don't have a nicer template for it — better
@@ -128,13 +183,54 @@ export function describe(entry: {
 
   // Fallback for transitions with no matching audit action.
   if (entry.source === "CaseTransition") {
+    const label = entry.reasonCode ? TRANSITION_LABELS[entry.reasonCode] : null;
+    if (label) return label;
     if (entry.fromState && entry.toState && entry.fromState !== entry.toState) {
-      return `${entry.reasonCode ?? "transition"}: ${entry.fromState} → ${entry.toState}`;
+      const from = STATE_LABELS[entry.fromState] ?? entry.fromState;
+      const to = STATE_LABELS[entry.toState] ?? entry.toState;
+      return `State changed: ${from} → ${to}`;
     }
-    return entry.reasonCode ?? "case transition";
+    return entry.reasonCode ? (TRANSITION_LABELS[entry.reasonCode] ?? entry.reasonCode) : "Case transition";
   }
 
-  return entry.action;
+  return ACTION_LABELS[entry.action] ?? entry.action;
+}
+
+/**
+ * Determine if two timeline entries describe the same real event — e.g.
+ * a CaseTransition with reasonCode `classified_INSUFFICIENT_FUNDS` and
+ * an AuditLog with action `classification_succeeded`.
+ */
+function sameActionFamily(a: TimelineEntry, b: TimelineEntry): boolean {
+  const actions = [a.action, b.action, a.reasonCode, b.reasonCode].filter(Boolean);
+  const normalized = actions.map((s) => (s ?? "").toLowerCase());
+
+  // Direct match on action or reasonCode
+  if (a.action === b.action || a.action === b.reasonCode || a.reasonCode === b.action) {
+    return true;
+  }
+
+  // Classification events: CaseTransition `classified_*` ↔ AuditLog `classification_*`
+  if (normalized.some((s) => s.startsWith("classified_")) && normalized.some((s) => s.startsWith("classification_"))) {
+    return true;
+  }
+
+  // Message events: CaseTransition `message_sent_*` ↔ AuditLog `delivery_attempted`
+  if (normalized.some((s) => s.startsWith("message_sent_") || s.startsWith("message_failed_")) && normalized.some((s) => s === "delivery_attempted")) {
+    return true;
+  }
+
+  // Action-scheduled events
+  if (normalized.some((s) => s === "action_scheduled") && normalized.some((s) => s === "action_scheduled")) {
+    return true;
+  }
+
+  // Human review events
+  if (normalized.some((s) => s === "pending_human_approval") && normalized.some((s) => s === "pending_human_approval")) {
+    return true;
+  }
+
+  return false;
 }
 
 export async function buildCaseTimeline(caseId: string): Promise<TimelineEntry[]> {
@@ -225,5 +321,28 @@ export async function buildCaseTimeline(caseId: string): Promise<TimelineEntry[]
   }
 
   entries.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  return entries;
+
+  // Deduplicate entries that describe the same real event — an AuditLog
+  // and CaseTransition row often fire within ~500 ms for the same action.
+  // Keep the AuditLog version (richer description) and drop the matching
+  // CaseTransition if it's within 2 s and shares the action family.
+  const deduped: TimelineEntry[] = [];
+  for (const entry of entries) {
+    const prev = deduped[deduped.length - 1];
+    if (
+      prev &&
+      prev.source !== entry.source &&
+      Math.abs(entry.createdAt.getTime() - prev.createdAt.getTime()) < 2000 &&
+      sameActionFamily(prev, entry)
+    ) {
+      // Keep the AuditLog version; drop the duplicate.
+      if (entry.source === "AuditLog") {
+        deduped[deduped.length - 1] = entry;
+      }
+      continue;
+    }
+    deduped.push(entry);
+  }
+
+  return deduped;
 }

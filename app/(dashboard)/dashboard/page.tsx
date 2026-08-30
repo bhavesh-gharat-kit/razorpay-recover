@@ -5,10 +5,25 @@ import type { AnalyticsSummary } from "@/lib/analytics/summary";
 import type { Scenario } from "@prisma/client";
 import { apiFetch, ApiRequestError } from "@/lib/api/client";
 import { useEventStream } from "@/lib/hooks/useEventStream";
-import { formatAmountINR } from "@/lib/messaging/formatAmount";
 import { AnimatedNumber } from "@/components/AnimatedNumber";
 import { ConnectionDot } from "@/components/ConnectionDot";
 import { DailyTrendChart } from "@/components/DailyTrendChart";
+
+/**
+ * Always show 2 decimal places for consistency on the dashboard cards.
+ * Unlike formatAmountINR which conditionally hides decimals on whole
+ * amounts, this keeps ".00" visible so the at-risk and recovered cards
+ * match formatting.
+ */
+function formatAmountINRConsistent(paise: number, currency: string): string {
+  const units = paise / 100;
+  const formatted = new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(units);
+  const symbol = currency === "INR" ? "₹" : `${currency} `;
+  return `${symbol}${formatted}`;
+}
 
 const SCENARIO_OPTIONS: { value: Scenario | "ALL"; label: string }[] = [
   { value: "ALL", label: "All scenarios" },
@@ -142,14 +157,15 @@ export default function SummaryPage() {
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
-              label="Total at-risk"
+              label="Total at-risk (lifetime)"
               value={summary.totalAtRiskPaise}
-              format={(n) => formatAmountINR(Math.round(n), "INR")}
+              format={(n) => formatAmountINRConsistent(Math.round(n), "INR")}
+              tooltip="Cumulative value of all detected at-risk transactions, not reduced by recoveries"
             />
             <StatCard
               label="Total recovered"
               value={summary.totalRecoveredPaise}
-              format={(n) => formatAmountINR(Math.round(n), "INR")}
+              format={(n) => formatAmountINRConsistent(Math.round(n), "INR")}
               accent="text-green-600 dark:text-green-400"
             />
             <StatCard
@@ -272,16 +288,19 @@ function StatCard({
   value,
   format,
   accent,
+  tooltip,
 }: {
   label: string;
   value: number;
   format: (n: number) => string;
   accent?: string;
+  tooltip?: string;
 }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500" title={tooltip}>
         {label}
+        {tooltip && <span className="ml-1 cursor-help text-slate-300 dark:text-slate-600" aria-label={tooltip}>ⓘ</span>}
       </p>
       <p className={`mt-1 text-3xl font-bold tabular-nums ${accent ?? "text-slate-900 dark:text-slate-100"}`}>
         <AnimatedNumber value={value} format={format} />
