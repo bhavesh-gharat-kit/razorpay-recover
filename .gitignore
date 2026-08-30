@@ -39,3 +39,6 @@ next-env.d.ts
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# local testing artifacts — not part of the submission
+/docs/testing/

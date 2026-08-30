@@ -964,9 +964,9 @@ async function main() {
   const passwordHash = await bcrypt.hash(demoPassword, 12);
 
   const demoUsers = [
-    { email: "admin@recover.local", role: UserRole.ADMIN },
-    { email: "reviewer@recover.local", role: UserRole.REVIEWER },
-    { email: "viewer@recover.local", role: UserRole.VIEWER },
+    { email: "admin@recover.test", role: UserRole.ADMIN },
+    { email: "reviewer@recover.test", role: UserRole.REVIEWER },
+    { email: "viewer@recover.test", role: UserRole.VIEWER },
   ];
 
   for (const u of demoUsers) {

@@ -20,7 +20,7 @@ export default function LoginPage() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      router.push("/");
+      router.push("/dashboard");
       router.refresh();
     } catch (err) {
       if (err instanceof ApiRequestError) {
