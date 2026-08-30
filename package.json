@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "format": "prettier --write .",
-    "worker": "tsx watch worker/index.ts",
+    "worker": "tsx watch --env-file=.env worker/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate:webhooks": "tsx scripts/simulate-webhooks.ts",

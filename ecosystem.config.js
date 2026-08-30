@@ -29,6 +29,9 @@ module.exports = {
       cwd: __dirname,
       env: {
         NODE_ENV: "production",
+        // `next start` binds to process.env.PORT; set it here rather than
+        // relying on .env so the listen port is deterministic under PM2.
+        PORT: 3000,
       },
       instances: 1,
       autorestart: true,
@@ -42,7 +45,9 @@ module.exports = {
     {
       name: "worker",
       script: "node_modules/.bin/tsx",
-      args: "worker/index.ts",
+      // `next start` auto-loads .env; a bare `tsx` process does not, so the
+      // worker needs it passed explicitly or lib/env.ts throws on boot.
+      args: "--env-file=.env worker/index.ts",
       cwd: __dirname,
       env: {
         NODE_ENV: "production",
