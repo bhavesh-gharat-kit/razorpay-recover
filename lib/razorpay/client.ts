@@ -145,6 +145,167 @@ export async function createPaymentLink(
 }
 
 // ---------------------------------------------------------------------------
+// createOrder — used by the live /demo flow to open Razorpay Checkout
+// ---------------------------------------------------------------------------
+
+export interface CreateOrderParams {
+  /** Amount in paise (smallest currency unit). */
+  amountPaise: number;
+  currency?: string;
+  /** Merchant-side reference for this order (shown in the Razorpay dashboard). */
+  receipt?: string;
+  notes?: Record<string, string>;
+}
+
+export interface OrderResult {
+  ok: true;
+  id: string; // order_...
+  amountPaise: number;
+  /** Whether this is a real Razorpay order or a placeholder. */
+  isPlaceholder: boolean;
+}
+
+export async function createOrder(
+  params: CreateOrderParams,
+): Promise<RazorpayResult<OrderResult>> {
+  const currency = params.currency ?? "INR";
+  const receipt =
+    params.receipt ?? `demo_${Math.random().toString(36).slice(2, 10)}`;
+
+  if (!isConfigured()) {
+    logger.warn(
+      { receipt },
+      "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not configured — returning placeholder order",
+    );
+    return {
+      ok: true,
+      id: `placeholder_order_${receipt}`,
+      amountPaise: params.amountPaise,
+      isPlaceholder: true,
+    };
+  }
+
+  try {
+    const body = {
+      amount: params.amountPaise,
+      currency,
+      receipt,
+      notes: params.notes,
+    };
+
+    const res = await fetch(`${RAZORPAY_BASE}/orders`, {
+      method: "POST",
+      headers: {
+        Authorization: authHeader(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      logger.error(
+        { status: res.status, errBody },
+        "razorpay createOrder failed",
+      );
+      return {
+        ok: false,
+        error: `Razorpay API error ${res.status}: ${errBody}`,
+        statusCode: res.status,
+      };
+    }
+
+    const data = await res.json();
+    return {
+      ok: true,
+      id: data.id,
+      amountPaise: data.amount,
+      isPlaceholder: false,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err: message }, "razorpay createOrder exception");
+    return { ok: false, error: message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// fetchPayment — used by /api/demo/result to pull real error metadata
+// ---------------------------------------------------------------------------
+
+export interface PaymentDetails {
+  ok: true;
+  id: string;
+  status: string;
+  amountPaise: number;
+  currency: string;
+  method: string | null;
+  email: string | null;
+  contact: string | null;
+  orderId: string | null;
+  errorCode: string | null;
+  errorDescription: string | null;
+  errorSource: string | null;
+  errorStep: string | null;
+  errorReason: string | null;
+  createdAt: number | null;
+}
+
+export async function fetchPayment(
+  paymentId: string,
+): Promise<RazorpayResult<PaymentDetails>> {
+  if (!isConfigured()) {
+    return {
+      ok: false,
+      error: "Razorpay keys not configured — cannot fetch payment",
+    };
+  }
+
+  try {
+    const res = await fetch(`${RAZORPAY_BASE}/payments/${paymentId}`, {
+      method: "GET",
+      headers: { Authorization: authHeader() },
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      logger.error(
+        { status: res.status, errBody, paymentId },
+        "razorpay fetchPayment failed",
+      );
+      return {
+        ok: false,
+        error: `Razorpay API error ${res.status}: ${errBody}`,
+        statusCode: res.status,
+      };
+    }
+
+    const d = await res.json();
+    return {
+      ok: true,
+      id: d.id,
+      status: d.status,
+      amountPaise: d.amount,
+      currency: d.currency,
+      method: d.method ?? null,
+      email: d.email ?? null,
+      contact: d.contact ?? null,
+      orderId: d.order_id ?? null,
+      errorCode: d.error_code ?? null,
+      errorDescription: d.error_description ?? null,
+      errorSource: d.error_source ?? null,
+      errorStep: d.error_step ?? null,
+      errorReason: d.error_reason ?? null,
+      createdAt: d.created_at ?? null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err: message }, "razorpay fetchPayment exception");
+    return { ok: false, error: message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // fetchPaymentLinkStatus
 // ---------------------------------------------------------------------------
 

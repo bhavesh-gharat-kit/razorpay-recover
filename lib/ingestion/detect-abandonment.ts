@@ -29,15 +29,39 @@ export interface AbandonmentResult {
   skippedCount: number;
 }
 
-export async function detectAbandonedCheckouts(): Promise<AbandonmentResult> {
-  const graceMinutes = env.CHECKOUT_ABANDONMENT_GRACE_MINUTES;
+export interface AbandonmentOptions {
+  /**
+   * When set, overrides `env.CHECKOUT_ABANDONMENT_GRACE_MINUTES`. The
+   * live-demo /api/demo/result route passes `0` so a just-created order
+   * qualifies as abandoned immediately — without this, an "Abandoned
+   * checkout" demo run would sit idle for the default 30 minutes before
+   * anything happened. The worker's cron loop uses the default.
+   */
+  graceMinutesOverride?: number;
+  /**
+   * When set, restrict the scan to this single Razorpay order id — the
+   * demo route uses this so a demo run never accidentally sweeps in
+   * unrelated real CREATED orders that happen to be older than the
+   * grace window. The worker passes nothing (scans everything).
+   */
+  razorpayOrderId?: string;
+}
+
+export async function detectAbandonedCheckouts(
+  options: AbandonmentOptions = {},
+): Promise<AbandonmentResult> {
+  const graceMinutes =
+    options.graceMinutesOverride ?? env.CHECKOUT_ABANDONMENT_GRACE_MINUTES;
   const cutoff = new Date(Date.now() - graceMinutes * 60 * 1000);
 
   // Find CREATED orders older than the grace window.
   const abandonedOrders = await prisma.orderTracking.findMany({
     where: {
       status: OrderTrackingStatus.CREATED,
-      createdAt: { lt: cutoff },
+      createdAt: { lte: cutoff },
+      ...(options.razorpayOrderId
+        ? { razorpayOrderId: options.razorpayOrderId }
+        : {}),
     },
     include: {
       merchant: true,

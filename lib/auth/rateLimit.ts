@@ -26,6 +26,26 @@ export const LOGIN_RATE_LIMIT: RateLimitOptions = {
   windowMs: 15 * 60 * 1000,
 };
 
+/**
+ * Per-IP cap on the public /demo endpoints (`/api/demo/order`,
+ * `/api/demo/result`). Modest — the demo is meant for judges and internal
+ * testing, not open traffic. Read polling on `/api/demo/case/[id]` uses a
+ * separate, looser bucket key.
+ */
+export const DEMO_RATE_LIMIT: RateLimitOptions = {
+  limit: 20,
+  windowMs: 10 * 60 * 1000,
+};
+
+/**
+ * Looser cap for the read-polling endpoint (`/api/demo/case/[id]`), which
+ * a healthy client hits ~7 times per case at 3s intervals.
+ */
+export const DEMO_READ_RATE_LIMIT: RateLimitOptions = {
+  limit: 200,
+  windowMs: 10 * 60 * 1000,
+};
+
 export interface RateLimitResult {
   allowed: boolean;
   remaining: number;

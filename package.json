@@ -15,6 +15,7 @@
     "test:classification": "tsx scripts/test-classification.ts",
     "test:send-email": "tsx --env-file=.env scripts/test-send-email.ts",
     "create:admin": "tsx scripts/create-admin-user.ts",
+    "link-demo-merchant": "tsx --env-file=.env scripts/link-demo-merchant.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

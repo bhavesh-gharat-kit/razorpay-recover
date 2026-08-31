@@ -138,3 +138,68 @@ running live isn't possible at all:
   actual HTTP response (or failure) rather than silently skipping, so
   the audit trail still tells the whole story even if the email never
   left Brevo's side.
+
+## Live checkout demo (`/demo`)
+
+An unauthenticated page at `/demo` opens a real Razorpay test-mode
+Checkout, catches the failure/abandonment, and shows the recovery
+pipeline running on that live event. Use this when a judge wants to
+prod the system rather than watch a walkthrough of pre-seeded data.
+
+**Requires**: `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`,
+`RAZORPAY_ACCOUNT_ID` set to your test account (then run
+`npm run link-demo-merchant` once), `RAZORPAY_WEBHOOK_SECRET` (register
+the webhook URL in the Razorpay dashboard for `payment.failed`,
+`payment.captured`, `order.paid`), and Brevo (`BREVO_API_KEY` +
+`BREVO_SENDER_EMAIL`) if you want the email to actually leave.
+
+### Click path
+
+1. Open `/demo` in a browser.
+2. Enter an email (yours, if you want to see the real drafted mail land),
+   optional name, and an amount between ₹1 and ₹10,000.
+3. Pick a scenario:
+   - **Failed payment** — Checkout opens, complete it and choose
+     **Failure** on Razorpay's simulated success/failure screen.
+     Refer to Razorpay's current *Test Card Details* docs for the test
+     card number a card-method flow prompts for (numbers change; don't
+     hardcode).
+   - **Abandoned checkout** — Checkout opens; close the modal (or
+     the browser tab) without paying.
+4. The timeline below the form appears within a few seconds and
+   updates through: detected → classified (cause + confidence) →
+   payment link created → email drafted → email sent.
+
+### Expected timeline entries (failed path, ₹499)
+
+- `event_ingested` (SYSTEM → DETECTED)
+- `classification_succeeded` — `INSUFFICIENT_FUNDS` / `CARD_EXPIRED` /
+  etc. depending on the error code the test failure produced, with a
+  confidence around 0.9+
+- `action_scheduled` — with the Razorpay Payment Link id
+- `draft_created` — TEMPLATE, EMAIL
+- `delivery_attempted` — `SENT` with the Brevo `messageId`, or
+  `FAILED` with a specific `errorDetail` if Brevo isn't configured
+- Case ends at `ACTION_SENT` (or `RECOVERED` if the visitor then pays
+  via the recovery link and the webhook lands)
+
+### Known gotchas
+
+- **Amount ≥ ₹5,000** → the orchestrator parks the case at
+  `pending_human_approval` (the `HUMAN_REVIEW_AMOUNT_THRESHOLD_PAISE`
+  guardrail). The timeline stops at that step by design — approve it
+  in the dashboard's Approvals queue to let it proceed. To see the
+  full send in the live demo, stay under ₹5,000.
+- **Same email 3×/day** → the third send trips
+  `MAX_CONTACTS_PER_CUSTOMER_PER_DAY=2` (default) and the case
+  transitions with `contact_cap_reached`. Use different emails between
+  live-demo runs, or reset the seed.
+- **No Brevo keys** → the pipeline still runs to completion; the
+  `DeliveryAttempt` row records `status: FAILED` with `errorDetail:
+  "Brevo not configured..."` and the timeline shows the delivery
+  failure entry, so the audit trail is complete.
+- **Real webhook races the client callback** — the real Razorpay
+  `payment.failed` webhook that lands moments after the client's
+  `/api/demo/result` call is deduped by `razorpayRefId` (the payment
+  id), so exactly one case is created. Both paths hand back the same
+  case id.

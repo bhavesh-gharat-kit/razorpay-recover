@@ -73,7 +73,7 @@ const GUARDS = [
   { icon: "clock", title: "One conversation at a time", copy: "A per-cause cooldown stops Recover contacting the same customer twice in quick succession." },
   { icon: "moon", title: "Civil hours only", copy: "Outreach is pinned to an IST send window per cause code. Nothing goes out at 3am." },
   { icon: "hand", title: "A hard attempt cap", copy: "Once the maximum attempts for a cause are spent, the agent stops and the case is closed or escalated." },
-  { icon: "ledger", title: "No silent actions", copy: "Every transition — the agent's own included — writes a reason and an actor before it takes effect." },
+  { icon: "ledger", title: "No silent actions or failures", copy: "Every transition — the agent's own, and every failed step and retry — writes a reason and an actor to the audit trail." },
 ] as const;
 
 const CHECKS = [
@@ -131,6 +131,9 @@ export default function LandingPage() {
           <Link href="/login" className="lp-btn lp-btn-primary">
             Log in to the console <Icon name="arrowRight" size={17} />
           </Link>
+          <Link href="/demo" className="lp-btn lp-btn-ghost">
+            Try the live demo
+          </Link>
           <a href="#how" className="lp-btn lp-btn-ghost">
             See how it works
           </a>
@@ -151,15 +154,15 @@ export default function LandingPage() {
           </div>
           <div className="lp-stat">
             <div className="n"><CountUp value={9} /></div>
-            <div className="l">failure causes it tells apart</div>
+            <div className="l">Razorpay failure codes classified</div>
           </div>
           <div className="lp-stat">
             <div className="n green"><CountUp value={100} suffix="%" /></div>
-            <div className="l">of actions written to an audit log</div>
+            <div className="l">of steps in the audit trail</div>
           </div>
           <div className="lp-stat">
-            <div className="n"><CountUp value={0} /></div>
-            <div className="l">paid APIs needed to run it</div>
+            <div className="n"><CountUp value={1} /></div>
+            <div className="l">bounded action per case, chosen by policy</div>
           </div>
         </Reveal>
       </header>
@@ -219,6 +222,8 @@ export default function LandingPage() {
             <p>
               Nothing in that chain is a black box. Each line carries a reason code, an
               actor, and a before/after snapshot, and the whole thing exports to CSV.
+              When a step fails — a Payment Link that didn&apos;t mint, a bounced send —
+              that&apos;s in the trail too, next to the retry that recovered it.
             </p>
           </Reveal>
 
@@ -351,8 +356,8 @@ export default function LandingPage() {
               <div><span className="u">viewer@recover.test</span> <span className="p">· read only</span></div>
             </div>
             <p style={{ marginTop: "16px", fontSize: "0.85rem" }}>
-              Prefer to read first? A written walk-through ships with the repo at{" "}
-              <code>docs/testing/recover-overview.html</code>.
+              The console opens on the recovery summary — recovered amount, recovery rate,
+              average time to recovery, and a live feed as the engine works through cases.
             </p>
           </div>
 
@@ -385,7 +390,7 @@ export default function LandingPage() {
             <Link href="/login" className="lp-btn lp-btn-primary">
               Log in to the console <Icon name="arrowRight" size={17} />
             </Link>
-            <a href="#how" className="lp-btn lp-btn-ghost">Back to the top of the story</a>
+            <a href="#reviewers" className="lp-btn lp-btn-ghost">See the reviewer checklist</a>
           </div>
         </Reveal>
       </section>

@@ -46,6 +46,12 @@ export const env = {
   RAZORPAY_KEY_SECRET: optional("RAZORPAY_KEY_SECRET", ""),
   RAZORPAY_WEBHOOK_SECRET: optional("RAZORPAY_WEBHOOK_SECRET", ""),
 
+  // Razorpay test-mode account id (acc_...) — the live /demo checkout flow
+  // tags its merchant with this so incoming `payment.failed` webhooks
+  // resolve to the right merchant. Optional; empty means the demo route
+  // falls back to the first seeded CHECKOUT_DROPOFF merchant.
+  RAZORPAY_ACCOUNT_ID: optional("RAZORPAY_ACCOUNT_ID", ""),
+
   // Message generation — template-first by default.
   // LLM drafting is opt-in and off by default.
   USE_LLM_DRAFTING: optionalBoolean("USE_LLM_DRAFTING", false),
