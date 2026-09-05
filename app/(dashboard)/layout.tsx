@@ -29,12 +29,16 @@ export default async function DashboardLayout({
 
   const currentUser: CurrentUser = { userId: user.id, email: user.email, role: user.role };
 
+  // On md+, the shell is a two-column app-shell: parent is exactly viewport
+  // height with overflow hidden so the sidebar can hold its position while
+  // the main pane scrolls internally. On mobile it falls back to a normal
+  // stacked flow (sidebar becomes a top bar, whole page scrolls).
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950 md:flex-row">
+    <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950 md:h-screen md:min-h-0 md:flex-row md:overflow-hidden">
       <aside className="w-full border-b border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 md:h-screen md:w-64 md:shrink-0 md:overflow-y-auto md:border-b-0 md:border-r">
         <Sidebar user={currentUser} />
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto p-4 md:p-8">{children}</main>
+      <main className="min-w-0 flex-1 overflow-y-auto p-4 md:h-screen md:p-8">{children}</main>
     </div>
   );
 }

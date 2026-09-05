@@ -36,12 +36,17 @@ export function DailyTrendChart({ points }: { points: DailyTrendPoint[] }) {
         const recoveredH = (p.recovered / maxDetected) * chartHeight;
         return (
           <g key={p.date}>
+            {/* "Detected" bars: previously fill-slate-700 in dark, which
+                sat on top of the slate-900 card and vanished. Bumped to
+                slate-500 so they stay visible even when nothing has been
+                recovered yet. */}
             <rect
               x={x}
               y={height - padding - detectedH}
               width={barWidth}
               height={detectedH}
-              className="fill-slate-200 dark:fill-slate-700"
+              rx={1.5}
+              className="fill-slate-300 dark:fill-slate-500"
             >
               <title>{`${p.date}: ${p.detected} detected`}</title>
             </rect>
@@ -50,6 +55,7 @@ export function DailyTrendChart({ points }: { points: DailyTrendPoint[] }) {
               y={height - padding - recoveredH}
               width={barWidth}
               height={recoveredH}
+              rx={1.5}
               className="fill-green-500"
             >
               <title>{`${p.date}: ${p.recovered} recovered`}</title>
@@ -62,7 +68,7 @@ export function DailyTrendChart({ points }: { points: DailyTrendPoint[] }) {
         y1={height - padding}
         x2={width - padding}
         y2={height - padding}
-        className="stroke-slate-300 dark:stroke-slate-600"
+        className="stroke-slate-300 dark:stroke-slate-500"
         strokeWidth={1}
       />
     </svg>
