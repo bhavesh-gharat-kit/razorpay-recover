@@ -25,3 +25,48 @@ body {
     text-wrap: balance;
   }
 }
+
+/* ------------------------------------------------------------------
+   Custom scrollbar — thin, rounded, translucent, theme-aware.
+   Uses the standard scrollbar-* properties for Firefox/Chrome 121+
+   and the ::-webkit-scrollbar pseudo-elements for older WebKit/Blink.
+------------------------------------------------------------------- */
+
+/* Firefox & modern Chrome (standard properties) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent; /* slate-400 @ 45% */
+}
+@media (prefers-color-scheme: dark) {
+  * {
+    scrollbar-color: rgba(100, 116, 139, 0.4) transparent; /* slate-500 @ 40% */
+  }
+}
+
+/* WebKit / older Blink */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.4);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.65);
+  }
+}

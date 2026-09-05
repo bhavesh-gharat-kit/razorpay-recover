@@ -198,7 +198,7 @@ export default function CasesPage() {
       )}
 
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[880px] text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
               <th className="px-3 py-2">Customer</th>
