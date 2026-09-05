@@ -42,3 +42,10 @@ next-env.d.ts
 
 # local testing artifacts — not part of the submission
 /docs/testing/
+scripts/scratch-*
+
+# build-process working notes
+CLAUDE.md
+PROGRESS.md
+/phases/
+/.claude/

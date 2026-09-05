@@ -4,9 +4,9 @@
  * rest of the pipeline (DeliveryAttempt, case transitions) can be exercised
  * end-to-end before a real SMS/WhatsApp provider is wired up.
  *
- * TODO: replace with MSG91 or Twilio implementation when SMS channel is
- * needed — single-file swap (update `getChannelAdapter` in ./index.ts to
- * point SMS/WHATSAPP at the new adapter; the interface doesn't change).
+ * To add a real SMS/WhatsApp provider (e.g. MSG91 or Twilio): implement
+ * `ChannelAdapter` in a new file, then update `getChannelAdapter` in
+ * `./index.ts` to point SMS/WHATSAPP at it — the interface doesn't change.
  */
 
 import { logger } from "@/lib/logger";

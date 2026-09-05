@@ -85,8 +85,7 @@ Re-run anytime with:
 npm run simulate:webhooks
 ```
 
-This was last run locally against `npm run dev` (this repo has no
-deployed instance yet — see PROGRESS.md's Phase 10 notes) and passed: all
+This was last run locally against `npm run dev` and passed: all
 unique events accepted, all duplicates ignored, invalid and missing
 signatures both rejected. Re-run it again against the real deployed URL
 once one exists, by pointing the script's `ENDPOINT` at

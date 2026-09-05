@@ -5,8 +5,8 @@
  * set (see `lib/env.ts`, which refuses to boot with the flag on and no
  * key). The model's job is tone and phrasing ONLY — every fact
  * (customer name, merchant name, amount, recovery link) is handed to it
- * as a fixed value to reproduce verbatim, per CLAUDE.md's anti-hallucination
- * rule. If the call fails, times out, or the response drops the recovery
+ * as a fixed value to reproduce verbatim — the model is never allowed to
+ * invent facts. If the call fails, times out, or the response drops the recovery
  * link, this falls back to the template generator rather than sending a
  * broken or fabricated message.
  */

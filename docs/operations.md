@@ -31,7 +31,7 @@ npm run create:admin -- --email=you@example.com --password='a-strong-password'
 (Or run it with no flags for an interactive prompt, password input
 hidden.) `scripts/create-admin-user.ts` always creates/promotes to
 ADMIN — there's no REVIEWER/VIEWER flag and no dashboard user-management
-UI (out of scope so far; a known limitation, see PROGRESS.md). To create
+UI (out of scope so far; a known limitation). To create
 a REVIEWER or VIEWER user, use `npx prisma studio` and edit the `User`
 table directly, or insert one via `prisma.user.create()` in a one-off
 script the same way `prisma/seed.ts` creates its three demo users.

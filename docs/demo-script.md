@@ -27,7 +27,7 @@ latency to a real VPS, cold-start on first page load).
    the same four numbers recompute per-scenario. This is the moment to
    say the three scenarios share one engine — same classifier, same
    orchestrator, same worker loop, just different cause codes and
-   templates (see `PROGRESS.md`'s Phase 9 notes if asked how).
+   templates — different cause codes and recovery policies, same engine.
 
 4. **Run Batch** — click **Run Batch** on Summary. Narrate: this
    triggers one full detect → classify → decide → execute pass
@@ -85,8 +85,7 @@ latency to a real VPS, cold-start on first page load).
 ## Known-good numbers
 
 Captured 2026-08-25 against a fresh `npx prisma db seed` + a few manual
-orchestrator ticks, run locally (this repo has no deployed instance yet —
-see PROGRESS.md's Phase 10 section for why). Use these as the numbers to
+orchestrator ticks, run locally. Use these as the numbers to
 speak to if the live system is showing something odd mid-demo, or if
 running live isn't possible at all:
 

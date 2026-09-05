@@ -9,7 +9,7 @@
  * `{{...}}` token in copy, generation fails loudly instead of shipping a
  * broken message.
  *
- * Tone guidelines applied throughout (see phases/05-message-generation.md):
+ * Tone guidelines applied throughout:
  *   - never threaten or use urgency language
  *   - always name the merchant, always include the exact amount
  *   - always include the recovery link as a clear CTA
