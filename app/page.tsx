@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Schibsted_Grotesk } from "next/font/google";
 import { Icon } from "@/components/landing/icons";
 import { Reveal } from "@/components/landing/Reveal";
@@ -7,7 +8,19 @@ import { CountUp } from "@/components/landing/CountUp";
 import { TiltCard } from "@/components/landing/TiltCard";
 import { ParticleField } from "@/components/landing/ParticleField";
 import { LandingNav } from "@/components/landing/LandingNav";
+import { HeroSceneFallback } from "@/components/landing/three/SceneFallback";
 import "./landing.css";
+
+// WebGL scenes: client-only, lazy-loaded so the 3D bundle never touches
+// SSR and never lands in the initial JS chunk for any non-landing route.
+const HeroScene = dynamic(() => import("@/components/landing/three/HeroScene"), {
+  ssr: false,
+  loading: () => <HeroSceneFallback />,
+});
+const PipelineScene = dynamic(() => import("@/components/landing/three/PipelineScene"), {
+  ssr: false,
+  loading: () => null,
+});
 
 const display = Schibsted_Grotesk({
   subsets: ["latin"],
@@ -34,14 +47,8 @@ export const metadata: Metadata = {
     "Recover turns a failed payment into a diagnosed, bounded, fully-logged attempt to collect the money. Built for the Razorpay AI Buildathon, Track 03.",
 };
 
-const STAGES = [
-  { icon: "detect", name: "Detect", copy: "A payment.failed webhook, an abandoned checkout, or an overdue invoice opens a case." },
-  { icon: "diagnose", name: "Diagnose", copy: "A rules table maps the Razorpay code to a cause. Unclear ones go to review, never a guess." },
-  { icon: "decide", name: "Decide", copy: "The policy for that cause picks one action and mints a real Razorpay Payment Link." },
-  { icon: "draft", name: "Draft", copy: "A template fills in the real name, amount and link — no invented facts." },
-  { icon: "send", name: "Send", copy: "The message goes out over email via Brevo, with the delivery reference recorded." },
-  { icon: "recover", name: "Recover", copy: "When the customer pays, the amount and time-to-recovery are logged on the case." },
-] as const;
+// STAGES data lives inside PipelineScene now — the pinned 3D section owns
+// the six-stage list and its rendering.
 
 const SCENARIOS = [
   {
@@ -114,6 +121,7 @@ export default function LandingPage() {
 
       {/* ---------------- hero ---------------- */}
       <header className="lp-hero">
+        <HeroScene />
         <div className="lp-hero-glow" aria-hidden="true" />
         <p className="tagline">Razorpay AI Buildathon · Track 03</p>
         <h1>
@@ -181,31 +189,8 @@ export default function LandingPage() {
         </Reveal>
       </section>
 
-      {/* ---------------- how it works ---------------- */}
-      <section id="how">
-        <Reveal>
-          <p className="lp-eyebrow">How it works</p>
-          <h2>What happens to a failed payment</h2>
-          <p>
-            Every case moves through the same six stages. A person only steps in when the
-            engine is unsure or the amount is large — otherwise it runs on its own, and
-            stops the moment a policy limit is reached.
-          </p>
-        </Reveal>
-
-        <Reveal className="lp-pipe" as="div">
-          {STAGES.map((s, i) => (
-            <div key={s.name} className={`lp-step ${s.name === "Recover" ? "is-recover" : ""}`}>
-              <div className="lp-step-ic">
-                <Icon name={s.icon} size={24} />
-              </div>
-              <span className="num">{String(i + 1).padStart(2, "0")}</span>
-              <h3>{s.name}</h3>
-              <p>{s.copy}</p>
-            </div>
-          ))}
-        </Reveal>
-      </section>
+      {/* ---------------- how it works (3D pinned scene) ---------------- */}
+      <PipelineScene />
 
       {/* ---------------- worked example ---------------- */}
       <section>

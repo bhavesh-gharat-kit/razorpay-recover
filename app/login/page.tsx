@@ -41,6 +41,33 @@ export default function LoginPage() {
           Sign in to the revenue recovery dashboard.
         </p>
 
+        {/* Quick-access demo credentials for judges / reviewers */}
+        <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-800/60">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            Demo accounts <span className="font-normal normal-case tracking-normal">· password: <code className="rounded bg-slate-200 px-1 py-0.5 text-xs dark:bg-slate-700">recover123</code></span>
+          </p>
+          <div className="space-y-1.5">
+            {[
+              { email: "admin@recover.test", role: "Admin", desc: "Full access" },
+              { email: "reviewer@recover.test", role: "Reviewer", desc: "Approve / reject" },
+              { email: "viewer@recover.test", role: "Viewer", desc: "Read only" },
+            ].map(({ email: cred, role, desc }) => (
+              <button
+                key={cred}
+                type="button"
+                onClick={() => { setEmail(cred); setPassword("recover123"); }}
+                className="flex w-full items-center justify-between rounded-md border border-transparent px-2 py-1.5 text-left text-sm transition-colors hover:border-slate-300 hover:bg-white dark:hover:border-slate-600 dark:hover:bg-slate-700/60"
+              >
+                <span className="font-medium text-slate-700 dark:text-slate-200">{cred}</span>
+                <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                  <span className="rounded bg-slate-200 px-1.5 py-0.5 font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">{role}</span>
+                  <span>{desc}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="email" className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
